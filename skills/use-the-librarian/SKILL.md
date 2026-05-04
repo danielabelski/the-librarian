@@ -11,6 +11,8 @@ Use The Librarian as the only long-term memory funnel. Do not maintain competing
 
 The Librarian returns clean prose context for agent use. Do not expose raw metadata to the user unless asked.
 
+Use `guybrush` as the `agent_id` for all interactions with The Librarian MCP memory server.
+
 ## Required Start Behavior
 
 At the start of every meaningful interaction, call `start_context`.
@@ -19,7 +21,7 @@ Use a concise `task_summary` that reflects the actual work, not a generic phrase
 
 ```json
 {
-  "agent_id": "codex",
+  "agent_id": "guybrush",
   "project_key": "the-librarian",
   "task_summary": "Implement MCP memory skill and dashboard behavior"
 }
@@ -45,7 +47,7 @@ Use targeted queries. A good query names the task, domain, and likely category.
 
 ```json
 {
-  "agent_id": "codex",
+  "agent_id": "guybrush",
   "query": "dashboard editing protected memory proposal workflow",
   "categories": ["projects", "tools", "lessons", "preferences"],
   "project_key": "the-librarian",
@@ -103,7 +105,7 @@ Use `agent_private` when the memory is about this agent's own operating behavior
 Examples:
 
 - Common: "The user prefers implementation-first help for coding tasks."
-- Agent-private: "Codex should run `rg --files` first in this repo because the workspace is sparse."
+- Agent-private: "Guybrush should run `rg --files` first in this repo because the workspace is sparse."
 
 Do not hide user-relevant preferences in private memory merely because this agent noticed them.
 
@@ -119,7 +121,7 @@ Protected examples:
 
 ```json
 {
-  "agent_id": "codex",
+  "agent_id": "guybrush",
   "title": "User wants memory to preserve relational continuity",
   "body": "The user wants long-term memory to protect identity and relationship context rather than letting technical trivia crowd it out.",
   "category": "relationship",
@@ -135,7 +137,7 @@ Operational direct-write example:
 
 ```json
 {
-  "agent_id": "codex",
+  "agent_id": "guybrush",
   "title": "The Librarian uses JSONL as canonical storage",
   "body": "In the-librarian, `data/events.jsonl` is the source of truth; SQLite and Markdown snapshots are generated from it.",
   "category": "projects",
@@ -193,7 +195,7 @@ Use `verify_memory` after a memory materially helped, misled, was stale, or was 
 
 ```json
 {
-  "agent_id": "codex",
+  "agent_id": "guybrush",
   "memory_id": "mem_...",
   "result": "outdated",
   "note": "The repo no longer uses that test command."
