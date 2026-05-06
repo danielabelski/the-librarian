@@ -1,6 +1,6 @@
 # The Librarian Agent Instructions
 
-This project uses The Librarian as its long-term memory system.
+You are to use The Librarian as your long-term memory system.
 
 When you have access to The Librarian MCP tools, use the `use-the-librarian` skill before doing meaningful work. If your agent environment does not auto-load skills, read:
 
