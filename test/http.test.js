@@ -3,9 +3,9 @@ import assert from "node:assert/strict";
 import fs from "node:fs";
 import path from "node:path";
 import { spawn } from "node:child_process";
-import { basicAuthHeader, cleanupTempDir, makeTempDir, postJson, startHttpServer } from "./helpers.js";
+import { cleanupTempDir, makeTempDir, postJson, startHttpServer } from "./helpers.js";
 
-test("HTTP service exposes health without auth and protects dashboard/API/MCP with auth", async () => {
+test("HTTP service exposes dashboard/API without auth and protects MCP with auth", async () => {
   const dataDir = makeTempDir();
   const server = await startHttpServer({ dataDir, token: "http-token", agentToken: "http-agent-token" });
   try {
@@ -13,17 +13,17 @@ test("HTTP service exposes health without auth and protects dashboard/API/MCP wi
     assert.equal(health.status, 200);
     const healthJson = await health.json();
     assert.equal(healthJson.auth, "enabled");
+    assert.equal(healthJson.dashboard_auth, "disabled");
+    assert.equal(healthJson.mcp_auth, "enabled");
     assert.equal(healthJson.agent_auth, "enabled");
     assert.equal("data_dir" in healthJson, false);
 
-    assert.equal((await fetch(`${server.url}/`)).status, 401);
-    assert.equal((await fetch(`${server.url}/api/state`)).status, 401);
-
-    const dashboard = await fetch(`${server.url}/`, {
-      headers: { authorization: basicAuthHeader("http-token") }
-    });
+    const dashboard = await fetch(`${server.url}/`);
     assert.equal(dashboard.status, 200);
     assert.match(await dashboard.text(), /The Librarian/);
+
+    const apiState = await fetch(`${server.url}/api/state`);
+    assert.equal(apiState.status, 200);
 
     const unauthMcp = await postJson(`${server.url}/mcp`, {
       jsonrpc: "2.0",
@@ -45,7 +45,7 @@ test("HTTP service exposes health without auth and protects dashboard/API/MCP wi
     const agentApi = await fetch(`${server.url}/api/state`, {
       headers: { authorization: "Bearer http-agent-token" }
     });
-    assert.equal(agentApi.status, 403);
+    assert.equal(agentApi.status, 200);
   } finally {
     await server.stop();
     cleanupTempDir(dataDir);
@@ -113,6 +113,30 @@ test("HTTP rejects browser origins by default unless they are same-origin", asyn
       origin: server.url
     });
     assert.equal(accepted.response.status, 200);
+
+    const rejectedDashboardPost = await postJson(`${server.url}/api/memories`, {
+      agent_id: "dashboard",
+      title: "Blocked cross-origin dashboard write",
+      body: "An untrusted browser origin should not write through the open dashboard API.",
+      category: "tools",
+      visibility: "common",
+      scope: "tool"
+    }, {
+      origin: "http://evil.local"
+    });
+    assert.equal(rejectedDashboardPost.response.status, 403);
+
+    const acceptedDashboardPost = await postJson(`${server.url}/api/memories`, {
+      agent_id: "dashboard",
+      title: "Accepted same-origin dashboard write",
+      body: "A same-origin dashboard request can write without an auth token.",
+      category: "tools",
+      visibility: "common",
+      scope: "tool"
+    }, {
+      origin: server.url
+    });
+    assert.equal(acceptedDashboardPost.response.status, 200);
   } finally {
     await server.stop();
     cleanupTempDir(dataDir);
@@ -131,14 +155,14 @@ test("HTTP dashboard can create proposals, approve them, and recall through MCP"
       visibility: "common",
       scope: "global",
       priority: "core"
-    }, { authorization: basicAuthHeader("workflow-token") });
+    });
 
     assert.equal(create.response.status, 200);
     assert.equal(create.json.status, "proposed");
 
     const approve = await postJson(`${server.url}/api/proposals/${create.json.memory.id}/approve`, {
       agent_id: "dashboard"
-    }, { authorization: basicAuthHeader("workflow-token") });
+    });
     assert.equal(approve.response.status, 200);
     assert.equal(approve.json.status, "active");
 
@@ -163,21 +187,22 @@ test("HTTP dashboard can create proposals, approve them, and recall through MCP"
   }
 });
 
-test("HTTP agent token cannot force protected memories active or approve proposals", async () => {
+test("HTTP dashboard API is open but cannot force protected memories active", async () => {
   const dataDir = makeTempDir();
   const server = await startHttpServer({ dataDir, token: "admin-token", agentToken: "agent-token" });
   try {
-    const agentCreateViaDashboard = await postJson(`${server.url}/api/memories`, {
+    const dashboardCreate = await postJson(`${server.url}/api/memories`, {
       agent_id: "codex",
       title: "Bypass attempt",
-      body: "Agent token should not reach dashboard APIs.",
+      body: "Dashboard clients should not be able to force protected memories active.",
       category: "identity",
       visibility: "common",
       scope: "global",
       force_active: true
-    }, { authorization: "Bearer agent-token" });
+    });
 
-    assert.equal(agentCreateViaDashboard.response.status, 403);
+    assert.equal(dashboardCreate.response.status, 200);
+    assert.equal(dashboardCreate.json.status, "proposed");
 
     const proposal = await postJson(`${server.url}/mcp`, {
       jsonrpc: "2.0",
@@ -199,9 +224,7 @@ test("HTTP agent token cannot force protected memories active or approve proposa
     assert.equal(proposal.response.status, 200);
     assert.match(proposal.json.result.content[0].text, /proposal for review/);
 
-    const proposals = await fetch(`${server.url}/api/state`, {
-      headers: { authorization: basicAuthHeader("admin-token") }
-    });
+    const proposals = await fetch(`${server.url}/api/state`);
     const proposedMemory = (await proposals.json()).memories.find((memory) => memory.title === "Agent proposal");
     assert.equal(proposedMemory.status, "proposed");
 
@@ -241,7 +264,7 @@ test("HTTP per-agent bearer tokens prevent agent_id impersonation", async () => 
       category: "tools",
       visibility: "common",
       scope: "tool"
-    }, { authorization: basicAuthHeader("mapped-admin-token") });
+    });
     await postJson(`${server.url}/api/memories`, {
       agent_id: "codex",
       title: "Codex private note",
@@ -249,7 +272,7 @@ test("HTTP per-agent bearer tokens prevent agent_id impersonation", async () => 
       category: "tools",
       visibility: "agent_private",
       scope: "tool"
-    }, { authorization: basicAuthHeader("mapped-admin-token") });
+    });
     await postJson(`${server.url}/api/memories`, {
       agent_id: "claude",
       title: "Claude private note",
@@ -257,7 +280,7 @@ test("HTTP per-agent bearer tokens prevent agent_id impersonation", async () => 
       category: "tools",
       visibility: "agent_private",
       scope: "tool"
-    }, { authorization: basicAuthHeader("mapped-admin-token") });
+    });
 
     const recall = await postJson(`${server.url}/mcp`, {
       jsonrpc: "2.0",
@@ -297,9 +320,7 @@ test("HTTP per-agent bearer tokens prevent agent_id impersonation", async () => 
     }, { authorization: "Bearer codex-token" });
     assert.equal(remember.response.status, 200);
 
-    const state = await fetch(`${server.url}/api/state`, {
-      headers: { authorization: basicAuthHeader("mapped-admin-token") }
-    });
+    const state = await fetch(`${server.url}/api/state`);
     const saved = (await state.json()).memories.find((memory) => memory.title === "Spoofed writer");
     assert.equal(saved.agent_id, "codex");
   } finally {

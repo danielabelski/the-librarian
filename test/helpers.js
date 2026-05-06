@@ -77,10 +77,6 @@ export async function startHttpServer({ dataDir, token = "test-token", agentToke
   };
 }
 
-export function basicAuthHeader(password, username = "dashboard") {
-  return `Basic ${Buffer.from(`${username}:${password}`).toString("base64")}`;
-}
-
 export async function postJson(url, payload, headers = {}) {
   const response = await fetch(url, {
     method: "POST",

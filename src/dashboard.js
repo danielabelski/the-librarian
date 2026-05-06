@@ -31,7 +31,7 @@ if (adminToken && [...agentTokenMap.values()].some((token) => token === adminTok
 }
 
 if (!adminToken) {
-  console.error("Warning: starting without authentication. Use only on localhost or a private development machine.");
+  console.error("Warning: starting without MCP admin authentication. Use only on localhost or a private development machine.");
 }
 
 if (adminToken && !agentToken && !agentTokenMap.size) {
@@ -45,31 +45,31 @@ const server = http.createServer(async (req, res) => {
     if (req.method === "GET" && url.pathname === "/healthz") {
       return sendJson(res, {
         status: "ok",
+        dashboard_auth: "disabled",
+        mcp_auth: adminToken ? "enabled" : "disabled",
         auth: adminToken ? "enabled" : "disabled",
         agent_auth: agentToken || agentTokenMap.size ? "enabled" : "disabled"
       });
     }
 
-    const auth = authenticate(req);
-    if (!auth) return sendUnauthorized(res);
     if (!isAllowedOrigin(req)) return sendJson(res, { error: "Origin not allowed" }, 403);
 
-    if (req.method === "POST" && url.pathname === "/mcp") {
+    if (url.pathname === "/mcp") {
+      const auth = authenticateMcp(req);
+      if (!auth) return sendUnauthorized(res);
+      if (req.method === "GET") {
+        return sendJson(res, {
+          status: "ok",
+          transport: "json-rpc-http",
+          message: "POST JSON-RPC MCP messages to this endpoint."
+        });
+      }
+      if (req.method !== "POST") return sendJson(res, { error: "Method not allowed" }, 405);
       const payload = await readJson(req);
       const response = await handleMcpPayload(store, payload, { role: auth.role, agentId: auth.agentId });
       if (response === null) return sendEmpty(res);
       return sendJson(res, response);
     }
-
-    if (req.method === "GET" && url.pathname === "/mcp") {
-      return sendJson(res, {
-        status: "ok",
-        transport: "json-rpc-http",
-        message: "POST JSON-RPC MCP messages to this endpoint."
-      });
-    }
-
-    if (auth.role !== "admin") return sendJson(res, { error: "Admin authorization required" }, 403);
 
     if (req.method === "GET" && url.pathname === "/") {
       return sendHtml(res, pageHtml());
@@ -174,7 +174,7 @@ function sendEmpty(res) {
 function sendUnauthorized(res) {
   res.writeHead(401, {
     "content-type": "application/json; charset=utf-8",
-    "www-authenticate": "Basic realm=\"The Librarian\", Bearer",
+    "www-authenticate": "Bearer",
     "cache-control": "no-store"
   });
   res.end(JSON.stringify({ error: "Unauthorized" }));
@@ -196,7 +196,7 @@ async function readJson(req) {
   }
 }
 
-function authenticate(req) {
+function authenticateMcp(req) {
   if (!adminToken) return { role: "admin" };
   const header = req.headers.authorization || "";
   if (header.startsWith("Bearer ")) {
@@ -207,16 +207,6 @@ function authenticate(req) {
     if (agentToken && timingSafeEqual(token, agentToken)) return { role: "agent" };
     if (timingSafeEqual(token, adminToken)) return { role: "admin" };
     return null;
-  }
-  if (header.startsWith("Basic ")) {
-    try {
-      const decoded = Buffer.from(header.slice("Basic ".length), "base64").toString("utf8");
-      const separator = decoded.indexOf(":");
-      const password = separator >= 0 ? decoded.slice(separator + 1) : decoded;
-      return timingSafeEqual(password, adminToken) ? { role: "admin" } : null;
-    } catch {
-      return null;
-    }
   }
   return null;
 }

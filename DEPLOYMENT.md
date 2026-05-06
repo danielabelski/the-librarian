@@ -9,7 +9,8 @@ This deployment is designed for a low-traffic personal VPS in a Tailnet.
 - HTTP dashboard at `/`
 - MCP JSON-RPC endpoint at `/mcp`
 - Healthcheck at `/healthz`
-- Separate admin and agent token authentication
+- Token authentication on the MCP endpoint
+- Unauthenticated dashboard intended for private-network access
 - Append-only JSONL ledger in `/data/events.jsonl`
 - Rebuildable SQLite index in `/data/librarian.sqlite`
 
@@ -34,7 +35,7 @@ LIBRARIAN_ADMIN_TOKEN=<long-random-admin-token>
 LIBRARIAN_AGENT_TOKEN=<different-long-random-agent-token>
 ```
 
-Use the admin token for the dashboard and administrative API calls. Use the agent token for normal agent access to `/mcp`.
+Use the admin token for administrative MCP calls. Use the agent token for normal agent access to `/mcp`. The dashboard and its browser API do not require a token, so keep the published host private to your Tailnet or another trusted network boundary.
 
 If you want `agent_private` memories to be enforced between agents, use per-agent tokens instead of, or in addition to, the shared agent token:
 
@@ -82,7 +83,7 @@ Open the dashboard:
 http://100.x.y.z:3838/
 ```
 
-Use any username and the admin token as the password when the browser prompts for Basic auth.
+The dashboard does not prompt for a token. Treat network access to this URL as dashboard access.
 
 ## MCP Endpoint
 
@@ -155,3 +156,23 @@ docker compose down
 ```
 
 Do not put `data/` on an NFS or other unreliable network filesystem. Keep the active database on local disk and back it up off-server.
+
+## Adding the MCP server
+
+### To Hermes Agent
+
+`hermes mcp add librarian --url http://<vps-tailscale-ip>:<port>/mcp`
+
+Or add the following to your `.hermes/config.yaml`:
+
+```yaml
+mcp_servers:
+  the_librarian:
+    url: "http://<vps-tailscale-ip>:<port>/mcp"
+    headers:
+      Authorization: "Bearer ***"
+```
+
+Check it with `hermes mcp test the_librarian`
+
+Make the skill auto-load: `hermes config set skills.preloaded "use-the-librarian,<some-other-skill>"`
