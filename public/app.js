@@ -1,6 +1,7 @@
 let state = { memories: [], events: [] };
 let activeStatus = "active";
 let toastTimer = null;
+let eventState = { events: [], total: 0, limit: 25, offset: 0 };
 const PROTECTED_CATEGORIES = new Set(["identity", "relationship"]);
 
 const $ = (id) => document.getElementById(id);
@@ -13,6 +14,8 @@ document.querySelectorAll(".tab").forEach((button) => {
     document.querySelectorAll(".tab").forEach((item) => item.classList.remove("active"));
     button.classList.add("active");
     activeStatus = button.dataset.status;
+    $("eventControls").classList.toggle("hidden", activeStatus !== "events");
+    if (activeStatus === "events") return runAction(() => loadEvents(0));
     render();
   });
 });
@@ -24,6 +27,12 @@ $("visibility").addEventListener("change", render);
 $("search").addEventListener("input", render);
 $("recall").addEventListener("click", () => runAction(recall));
 $("saveNew").addEventListener("click", () => runAction(saveNew));
+$("eventApply").addEventListener("click", () => runAction(() => loadEvents(0)));
+$("eventPrev").addEventListener("click", () => runAction(() => loadEvents(Math.max(eventState.offset - eventState.limit, 0))));
+$("eventNext").addEventListener("click", () => {
+  const nextOffset = eventState.offset + eventState.limit;
+  if (nextOffset < eventState.total) runAction(() => loadEvents(nextOffset));
+});
 
 async function load() {
   status.textContent = "Loading";
@@ -31,7 +40,8 @@ async function load() {
   if (!response.ok) throw new Error("Could not load dashboard state.");
   state = await response.json();
   status.textContent = state.memories.length + " memories";
-  render();
+  if (activeStatus === "events") await loadEvents(eventState.offset);
+  else render();
 }
 
 function render() {
@@ -51,7 +61,53 @@ function render() {
 }
 
 function renderEvents() {
-  list.innerHTML = state.events.map((event) => '<article class="memory"><h2>' + escapeHtml(event.event_type) + '</h2><div class="meta"><span class="pill">' + escapeHtml(event.created_at) + '</span><span class="pill">' + escapeHtml(event.agent_id || "") + '</span></div><p>' + escapeHtml(event.memory_id || "") + '</p></article>').join("") || '<p class="status">No logs yet.</p>';
+  $("eventControls").classList.remove("hidden");
+  $("eventPrev").disabled = eventState.offset <= 0;
+  $("eventNext").disabled = eventState.offset + eventState.limit >= eventState.total;
+  const start = eventState.total ? eventState.offset + 1 : 0;
+  const end = Math.min(eventState.offset + eventState.limit, eventState.total);
+  $("eventPage").textContent = eventState.total ? `${start}-${end} of ${eventState.total}` : "0 logs";
+  list.innerHTML = eventState.events.map(renderEvent).join("") || '<p class="status">No logs match these filters.</p>';
+}
+
+async function loadEvents(offset = eventState.offset) {
+  const params = new URLSearchParams({
+    limit: String(eventState.limit),
+    offset: String(offset)
+  });
+  if ($("eventType").value) params.set("type", $("eventType").value);
+  if ($("eventResult").value) params.set("result", $("eventResult").value);
+  if ($("eventAgent").value.trim()) params.set("agent_id", $("eventAgent").value.trim());
+  if ($("eventQuery").value.trim()) params.set("query", $("eventQuery").value.trim());
+  const response = await fetch("/api/events?" + params.toString());
+  if (!response.ok) throw new Error("Could not load logs.");
+  eventState = await response.json();
+  renderEvents();
+}
+
+function renderEvent(event) {
+  const payload = event.payload || {};
+  const summary = eventSummary(event, payload);
+  const payloadText = JSON.stringify(payload, null, 2);
+  return '<article class="memory">' +
+    '<h2>' + escapeHtml(event.event_type) + '</h2>' +
+    '<div class="meta">' +
+      pill(event.created_at) + pill(event.agent_id || "no agent") + (event.memory_id ? pill(event.memory_id) : "") +
+      (payload.result ? pill(payload.result) : "") + (payload.returned_count === 0 ? pill("no results") : "") +
+    '</div>' +
+    (summary ? '<p>' + escapeHtml(summary) + '</p>' : '') +
+    (payloadText && payloadText !== "{}" ? '<pre class="event-payload">' + escapeHtml(payloadText) + '</pre>' : '') +
+  '</article>';
+}
+
+function eventSummary(event, payload) {
+  if (event.event_type === "memory.recall_empty") return 'Recall returned no memories for "' + (payload.query || "") + '".';
+  if (event.event_type === "memory.recalled") return 'Recall returned memory for "' + (payload.query || "") + '".';
+  if (event.event_type === "memory.verified") return 'Memory marked ' + (payload.result || "verified") + (payload.note ? ': ' + payload.note : ".");
+  if (payload.memory?.title) return payload.memory.title;
+  if (payload.patch?.title || payload.patch?.body) return [payload.patch.title, payload.patch.body].filter(Boolean).join(": ");
+  if (payload.query) return payload.query;
+  return event.memory_id || "";
 }
 
 function renderMemory(memory) {

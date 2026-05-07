@@ -128,6 +128,21 @@ const server = http.createServer(async (req, res) => {
       });
     }
 
+    if (req.method === "GET" && url.pathname === "/api/events") {
+      return sendJson(
+        res,
+        store.listEvents({
+          type: url.searchParams.get("type") || "",
+          agent_id: url.searchParams.get("agent_id") || "",
+          memory_id: url.searchParams.get("memory_id") || "",
+          result: url.searchParams.get("result") || "",
+          query: url.searchParams.get("query") || "",
+          limit: Number(url.searchParams.get("limit") || 25),
+          offset: Number(url.searchParams.get("offset") || 0),
+        }),
+      );
+    }
+
     if (req.method === "POST" && url.pathname === "/api/memories") {
       const body = await readJson(req);
       const result = store.createMemory(body);

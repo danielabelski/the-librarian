@@ -321,6 +321,48 @@ export class LibrarianStore {
     return row ? rowToMemory(row) : null;
   }
 
+  listEvents({ type = "", agent_id = "", memory_id = "", result = "", query = "", limit = 25, offset = 0 } = {}) {
+    const eventType = normalizeString(type);
+    const agentId = normalizeString(agent_id);
+    const memoryId = normalizeString(memory_id);
+    const expectedResult = normalizeString(result);
+    const searchQuery = normalizeString(query).toLowerCase();
+    const safeLimit = Math.min(Math.max(Number(limit) || 25, 1), 100);
+    const safeOffset = Math.max(Number(offset) || 0, 0);
+    const filtered = this.readEvents()
+      .filter((event) => {
+        const payload = event.payload || {};
+        if (eventType && event.event_type !== eventType) return false;
+        if (agentId && event.agent_id !== agentId) return false;
+        if (memoryId && event.memory_id !== memoryId) return false;
+        if (expectedResult && payload.result !== expectedResult) return false;
+        if (searchQuery) {
+          const haystack = [
+            event.event_type,
+            event.agent_id,
+            event.memory_id,
+            payload.query,
+            payload.result,
+            payload.note,
+            payload.memory?.title,
+            payload.memory?.body,
+            payload.patch?.title,
+            payload.patch?.body
+          ].filter(Boolean).join(" ").toLowerCase();
+          if (!haystack.includes(searchQuery)) return false;
+        }
+        return true;
+      })
+      .reverse();
+
+    return {
+      events: filtered.slice(safeOffset, safeOffset + safeLimit),
+      total: filtered.length,
+      limit: safeLimit,
+      offset: safeOffset
+    };
+  }
+
   searchMemories({ agent_id = DEFAULT_AGENT_ID, query = "", categories = [], project_key = "", include_private = true, limit = 8, status = "active" } = {}) {
     const cleaned = normalizeString(query);
     const categorySet = new Set(asArray(categories));
@@ -452,6 +494,14 @@ export class LibrarianStore {
   }
 
   recordRecall(memories, agent_id = DEFAULT_AGENT_ID, query = "") {
+    if (!memories.length) {
+      this.appendEvent("memory.recall_empty", {
+        agent_id,
+        query,
+        returned_count: 0
+      }, { agent_id });
+      return;
+    }
     for (const memory of memories) {
       this.appendEvent("memory.recalled", { memory_id: memory.id, agent_id, query }, { memory_id: memory.id, agent_id });
     }

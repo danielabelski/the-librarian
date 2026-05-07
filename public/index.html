@@ -44,6 +44,35 @@
         <button class="tab" data-status="deleted">Deleted</button>
         <button class="tab" data-status="events">Logs</button>
       </div>
+      <div id="eventControls" class="event-controls hidden">
+        <select id="eventType">
+          <option value="">All event types</option>
+          <option>memory.recall_empty</option>
+          <option>memory.recalled</option>
+          <option>memory.verified</option>
+          <option>memory.created</option>
+          <option>memory.proposed</option>
+          <option>memory.updated</option>
+          <option>memory.deleted</option>
+          <option>memory.approved</option>
+          <option>memory.rejected</option>
+          <option>memory.conflict_detected</option>
+          <option>memory.conflict_resolved</option>
+        </select>
+        <select id="eventResult">
+          <option value="">All verification results</option>
+          <option>useful</option>
+          <option>not_useful</option>
+          <option>outdated</option>
+          <option>wrong</option>
+        </select>
+        <input id="eventAgent" placeholder="agent id">
+        <input id="eventQuery" placeholder="log search">
+        <button id="eventApply">Apply</button>
+        <button id="eventPrev">Previous</button>
+        <button id="eventNext">Next</button>
+        <span class="status" id="eventPage"></span>
+      </div>
       <div id="newForm" class="memory hidden">
         <div class="editor">
           <label>Title <input id="formTitle"></label>

@@ -35,6 +35,7 @@ test("HTTP service exposes dashboard/API without auth and protects MCP with auth
     assert.match(dashboardHtml, /\/app\.js/);
     assert.match(dashboardHtml, /identity \(protected\)/);
     assert.match(dashboardHtml, /id="toast"/);
+    assert.match(dashboardHtml, /id="eventControls"/);
 
     const dashboardScript = await fetch(`${server.url}/app.js`);
     assert.equal(dashboardScript.status, 200);
@@ -45,10 +46,13 @@ test("HTTP service exposes dashboard/API without auth and protects MCP with auth
     assert.match(dashboardScriptText, /editCategory/);
     assert.match(dashboardScriptText, /showToast/);
     assert.match(dashboardScriptText, /PROTECTED_CATEGORIES/);
+    assert.match(dashboardScriptText, /loadEvents/);
 
     const dashboardStyles = await fetch(`${server.url}/styles.css`);
     assert.equal(dashboardStyles.status, 200);
-    assert.match(await dashboardStyles.text(), /editor-grid/);
+    const dashboardStylesText = await dashboardStyles.text();
+    assert.match(dashboardStylesText, /editor-grid/);
+    assert.match(dashboardStylesText, /event-controls/);
 
     const apiState = await fetch(`${server.url}/api/state`);
     assert.equal(apiState.status, 200);
@@ -346,6 +350,82 @@ test("HTTP dashboard API can update ordinary memory routing fields", async () =>
     assert.equal(update.json.scope, "project");
     assert.equal(update.json.project_key, "memory-system");
     assert.deepEqual(update.json.tags, ["dashboard", "editing", "routing"]);
+  } finally {
+    await server.stop();
+    cleanupTempDir(dataDir);
+  }
+});
+
+test("HTTP event log is paginated, filterable, and records empty or unhelpful recall", async () => {
+  const dataDir = makeTempDir();
+  const server = await startHttpServer({
+    dataDir,
+    token: "events-token",
+    agentToken: "events-agent-token",
+  });
+  try {
+    const emptyRecall = await postJson(`${server.url}/api/recall`, {
+      agent_id: "codex",
+      query: "definitely no memories match this",
+      limit: 5,
+    });
+    assert.equal(emptyRecall.response.status, 200);
+    assert.deepEqual(emptyRecall.json.memories, []);
+
+    const emptyEvents = await fetch(`${server.url}/api/events?type=memory.recall_empty&agent_id=codex&limit=2&offset=0`);
+    assert.equal(emptyEvents.status, 200);
+    const emptyJson = await emptyEvents.json();
+    assert.equal(emptyJson.total, 1);
+    assert.equal(emptyJson.limit, 2);
+    assert.equal(emptyJson.offset, 0);
+    assert.equal(emptyJson.events[0].event_type, "memory.recall_empty");
+    assert.equal(emptyJson.events[0].payload.query, "definitely no memories match this");
+    assert.equal(emptyJson.events[0].payload.returned_count, 0);
+
+    const create = await postJson(`${server.url}/api/memories`, {
+      agent_id: "dashboard",
+      title: "Bad recall candidate",
+      body: "This memory will be marked not useful and wrong.",
+      category: "tools",
+      visibility: "common",
+      scope: "tool",
+    });
+    assert.equal(create.response.status, 200);
+
+    for (const result of ["not_useful", "wrong"]) {
+      const verification = await postJson(
+        `${server.url}/mcp`,
+        {
+          jsonrpc: "2.0",
+          id: result,
+          method: "tools/call",
+          params: {
+            name: "verify_memory",
+            arguments: {
+              agent_id: "codex",
+              memory_id: create.json.memory.id,
+              result,
+              note: `${result} recall feedback`,
+            },
+          },
+        },
+        { authorization: "Bearer events-agent-token" },
+      );
+      assert.equal(verification.response.status, 200);
+    }
+
+    const wrongEvents = await fetch(`${server.url}/api/events?type=memory.verified&result=wrong&query=wrong%20recall&limit=1`);
+    assert.equal(wrongEvents.status, 200);
+    const wrongJson = await wrongEvents.json();
+    assert.equal(wrongJson.total, 1);
+    assert.equal(wrongJson.events[0].payload.result, "wrong");
+    assert.equal(wrongJson.events[0].payload.note, "wrong recall feedback");
+
+    const notUsefulEvents = await fetch(`${server.url}/api/events?type=memory.verified&result=not_useful&limit=1`);
+    assert.equal(notUsefulEvents.status, 200);
+    const notUsefulJson = await notUsefulEvents.json();
+    assert.equal(notUsefulJson.total, 1);
+    assert.equal(notUsefulJson.events[0].payload.result, "not_useful");
   } finally {
     await server.stop();
     cleanupTempDir(dataDir);
