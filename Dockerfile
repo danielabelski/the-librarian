@@ -9,6 +9,7 @@ ENV NODE_ENV=production \
 
 COPY package.json README.md ./
 COPY src ./src
+COPY public ./public
 COPY scripts ./scripts
 COPY skills ./skills
 

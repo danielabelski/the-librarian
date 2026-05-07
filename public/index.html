@@ -1,0 +1,66 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>The Librarian</title>
+  <link rel="stylesheet" href="/styles.css">
+</head>
+<body>
+  <header>
+    <h1>The Librarian</h1>
+    <div class="toolbar">
+      <button class="primary" id="refresh">Refresh</button>
+      <button id="newMemory">New Memory</button>
+    </div>
+  </header>
+  <main>
+    <aside>
+      <label>Search <input id="search" placeholder="Recall memories"></label>
+      <label>Agent <input id="agent" value="dashboard"></label>
+      <label>Project <input id="project" placeholder="optional project key"></label>
+      <button class="primary" id="recall">Recall</button>
+      <div class="filters">
+        <select id="category">
+          <option value="">All categories</option>
+          <option>identity</option><option>relationship</option><option>preferences</option>
+          <option>projects</option><option>environment</option><option>tools</option>
+          <option>lessons</option><option>people</option><option>open_threads</option>
+        </select>
+        <select id="visibility">
+          <option value="">All visibility</option>
+          <option>common</option>
+          <option>agent_private</option>
+        </select>
+      </div>
+      <p class="status" id="status"></p>
+    </aside>
+    <section>
+      <div class="tabs">
+        <button class="tab active" data-status="active">Active</button>
+        <button class="tab" data-status="proposed">Proposed</button>
+        <button class="tab" data-status="conflicted">Conflicts</button>
+        <button class="tab" data-status="archived">Archived</button>
+        <button class="tab" data-status="deleted">Deleted</button>
+        <button class="tab" data-status="events">Logs</button>
+      </div>
+      <div id="newForm" class="memory hidden">
+        <div class="editor">
+          <label>Title <input id="formTitle"></label>
+          <label>Body <textarea id="formBody"></textarea></label>
+          <label>Category <select id="formCategory">
+            <option>lessons</option><option>identity</option><option>relationship</option><option>preferences</option>
+            <option>projects</option><option>environment</option><option>tools</option><option>people</option><option>open_threads</option>
+          </select></label>
+          <label>Visibility <select id="formVisibility"><option>common</option><option>agent_private</option></select></label>
+          <label>Scope <select id="formScope"><option>global</option><option>project</option><option>environment</option><option>tool</option><option>session</option></select></label>
+          <label>Tags <input id="formTags" placeholder="comma-separated"></label>
+          <button class="primary" id="saveNew">Save</button>
+        </div>
+      </div>
+      <div class="memory-list" id="list"></div>
+    </section>
+  </main>
+  <script src="/app.js" defer></script>
+</body>
+</html>

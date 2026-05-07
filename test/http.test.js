@@ -20,7 +20,22 @@ test("HTTP service exposes dashboard/API without auth and protects MCP with auth
 
     const dashboard = await fetch(`${server.url}/`);
     assert.equal(dashboard.status, 200);
-    assert.match(await dashboard.text(), /The Librarian/);
+    const dashboardHtml = await dashboard.text();
+    assert.match(dashboardHtml, /The Librarian/);
+    assert.match(dashboardHtml, /\/styles\.css/);
+    assert.match(dashboardHtml, /\/app\.js/);
+
+    const dashboardScript = await fetch(`${server.url}/app.js`);
+    assert.equal(dashboardScript.status, 200);
+    const dashboardScriptText = await dashboardScript.text();
+    assert.match(dashboardScriptText, /editAgent/);
+    assert.match(dashboardScriptText, /editTags/);
+    assert.match(dashboardScriptText, /editScope/);
+    assert.match(dashboardScriptText, /editCategory/);
+
+    const dashboardStyles = await fetch(`${server.url}/styles.css`);
+    assert.equal(dashboardStyles.status, 200);
+    assert.match(await dashboardStyles.text(), /editor-grid/);
 
     const apiState = await fetch(`${server.url}/api/state`);
     assert.equal(apiState.status, 200);
@@ -181,6 +196,49 @@ test("HTTP dashboard can create proposals, approve them, and recall through MCP"
 
     assert.equal(context.response.status, 200);
     assert.match(context.json.result.content[0].text, /Protected identity memories/);
+  } finally {
+    await server.stop();
+    cleanupTempDir(dataDir);
+  }
+});
+
+test("HTTP dashboard API can update ordinary memory routing fields", async () => {
+  const dataDir = makeTempDir();
+  const server = await startHttpServer({ dataDir, token: "edit-token", agentToken: "edit-agent-token" });
+  try {
+    const create = await postJson(`${server.url}/api/memories`, {
+      agent_id: "dashboard",
+      title: "Editable dashboard memory",
+      body: "The dashboard should expose routing fields for ordinary memories.",
+      category: "tools",
+      visibility: "common",
+      scope: "tool",
+      project_key: "the-librarian",
+      tags: ["dashboard"]
+    });
+
+    assert.equal(create.response.status, 200);
+    assert.equal(create.json.status, "active");
+
+    const update = await postJson(`${server.url}/api/memories/${create.json.memory.id}/update`, {
+      agent_id: "dashboard",
+      patch: {
+        agent_id: "codex",
+        category: "projects",
+        visibility: "agent_private",
+        scope: "project",
+        project_key: "memory-system",
+        tags: ["dashboard", "editing", "routing"]
+      }
+    });
+
+    assert.equal(update.response.status, 200);
+    assert.equal(update.json.agent_id, "codex");
+    assert.equal(update.json.category, "projects");
+    assert.equal(update.json.visibility, "agent_private");
+    assert.equal(update.json.scope, "project");
+    assert.equal(update.json.project_key, "memory-system");
+    assert.deepEqual(update.json.tags, ["dashboard", "editing", "routing"]);
   } finally {
     await server.stop();
     cleanupTempDir(dataDir);
