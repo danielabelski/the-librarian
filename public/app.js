@@ -41,6 +41,7 @@
 
     $("sortBar").classList.toggle("hidden", !isBrowse);
     $("eventControls").classList.toggle("hidden", !isLogs);
+    $("browseLayout").classList.toggle("hidden", isAnalytics);
     $("analyticsTab").classList.toggle("hidden", !isAnalytics);
     $("detailPanel").classList.add("hidden");
 
