@@ -1,0 +1,11 @@
+{
+  "commands": [
+    {
+      "name": "/lib:session",
+      "description": "Manage Librarian sessions (start/list/resume/checkpoint/pause/end/archive/restore/delete/search/status)",
+      "args": "free-text",
+      "handler": "librarianSessionHandler",
+      "notes": "Register a single command and parse the remainder as <subcommand> [args]. Do not register each verb separately."
+    }
+  ]
+}

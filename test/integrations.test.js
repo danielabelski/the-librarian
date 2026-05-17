@@ -107,3 +107,69 @@ test("integrations/codex wrapper.sh is executable and exports LIBRARIAN_SESSION_
   assert.match(content, /LIBRARIAN_SESSION_ID/);
   assert.match(content, /sessions\s+(start|pause|end)/);
 });
+
+test("integrations/pi package ships the documented files", () => {
+  for (const file of [
+    "README.md",
+    "AGENTS.md",
+    "slash-commands.md",
+    "config.example.yaml",
+    "wrapper.sh",
+    "healthcheck.md"
+  ]) {
+    assertNonEmptyFile(pkgPath("pi", file));
+  }
+  assertReferencesLib(pkgPath("pi", "AGENTS.md"));
+});
+
+test("integrations/pi documents the open runtime question and conservative capture default", () => {
+  const readme = fs.readFileSync(pkgPath("pi", "README.md"), "utf8");
+  assert.match(readme, /capture/i, "Pi README must mention the conservative capture default");
+  const agents = fs.readFileSync(pkgPath("pi", "AGENTS.md"), "utf8");
+  assert.match(agents, /capture/i, "Pi AGENTS.md must document the conservative capture default");
+});
+
+test("integrations/pi wrapper.sh is executable and references the lifecycle", () => {
+  const wrapperPath = pkgPath("pi", "wrapper.sh");
+  const stat = fs.statSync(wrapperPath);
+  assert.ok((stat.mode & 0o111) !== 0, "wrapper.sh must be executable");
+  const content = fs.readFileSync(wrapperPath, "utf8");
+  assert.match(content, /LIBRARIAN_SESSION_ID/);
+  assert.match(content, /sessions\s+(start|pause|end)/);
+});
+
+test("integrations/opencode package ships the documented files", () => {
+  for (const file of [
+    "README.md",
+    "AGENTS.md",
+    "slash-commands.md",
+    "opencode.example.json",
+    "commands.example.json",
+    "wrapper.sh",
+    "healthcheck.md"
+  ]) {
+    assertNonEmptyFile(pkgPath("opencode", file));
+  }
+  assertReferencesLib(pkgPath("opencode", "AGENTS.md"));
+});
+
+test("integrations/opencode example configs are valid JSON", () => {
+  const opencode = JSON.parse(fs.readFileSync(pkgPath("opencode", "opencode.example.json"), "utf8"));
+  assert.ok(opencode, "opencode.example.json must parse");
+  const flat = JSON.stringify(opencode);
+  assert.match(flat, /librarian/i);
+  assert.match(flat, /\/mcp/);
+
+  const commands = JSON.parse(fs.readFileSync(pkgPath("opencode", "commands.example.json"), "utf8"));
+  assert.ok(commands, "commands.example.json must parse");
+  assert.match(JSON.stringify(commands), /lib:session/);
+});
+
+test("integrations/opencode wrapper.sh is executable and records attachment", () => {
+  const wrapperPath = pkgPath("opencode", "wrapper.sh");
+  const stat = fs.statSync(wrapperPath);
+  assert.ok((stat.mode & 0o111) !== 0, "wrapper.sh must be executable");
+  const content = fs.readFileSync(wrapperPath, "utf8");
+  assert.match(content, /LIBRARIAN_SESSION_ID/);
+  assert.match(content, /sessions\s+(start|pause|attach)/);
+});
