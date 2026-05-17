@@ -4,6 +4,7 @@ import { DatabaseSync } from "node:sqlite";
 import {
   DEFAULT_AGENT_ID,
   SESSION_CAPTURE_MODES,
+  SESSION_PAYLOAD_TYPES,
   VISIBILITIES,
   asArray,
   isProtectedCategory,
@@ -708,7 +709,47 @@ export class LibrarianStore {
       if (!session) return;
       this._insertSessionRow(session);
       this._insertSessionEventRow(event, eventSummary(event), shortType(type));
+      return;
     }
+    if (type === "session.event_recorded") {
+      const session = this.getSession(event.session_id);
+      if (!session) return;
+      const payloadType = event.payload?.type;
+      const summary = event.payload?.summary || "";
+      const wasPaused = session.status === "paused";
+      const updates = {
+        last_activity_at: event.created_at,
+        updated_at: event.created_at
+      };
+      if (wasPaused) {
+        updates.status = "active";
+        updates.paused_at = null;
+      }
+      this._patchSessionRow(session.id, updates);
+      this._insertSessionEventRow(event, summary, payloadType);
+    }
+  }
+
+  _patchSessionRow(id, patch) {
+    const allowed = [
+      "title", "project_key", "status", "prior_status", "visibility",
+      "created_by_agent_id", "current_agent_id", "created_in_harness", "current_harness",
+      "source_ref", "cwd", "start_summary", "rolling_summary", "end_summary",
+      "next_steps_json", "tags_json", "capture_mode",
+      "started_at", "updated_at", "last_activity_at",
+      "paused_at", "ended_at", "archived_at", "deleted_at", "metadata_json"
+    ];
+    const keys = [];
+    const params = [];
+    for (const key of allowed) {
+      if (patch[key] !== undefined) {
+        keys.push(`${key} = ?`);
+        params.push(patch[key]);
+      }
+    }
+    if (!keys.length) return;
+    params.push(id);
+    this.db.prepare(`UPDATE sessions SET ${keys.join(", ")} WHERE id = ?`).run(...params);
   }
 
   _insertSessionRow(session) {
@@ -887,6 +928,62 @@ export class LibrarianStore {
       limit
     };
   }
+
+  recordSessionEvent(input = {}) {
+    const sessionId = normalizeString(input.session_id);
+    const type = normalizeString(input.type);
+    if (!SESSION_PAYLOAD_TYPES.includes(type)) {
+      throw new Error(`Unknown session event payload type: ${type || "(empty)"}`);
+    }
+    const session = this.getSession(sessionId);
+    if (!session) throw new Error(`No session found for id ${sessionId}`);
+
+    const agentId = normalizeString(input.agent_id, session.current_agent_id || DEFAULT_AGENT_ID);
+    const harness = normalizeString(input.harness) || session.current_harness || null;
+    const sourceRef = normalizeString(input.source_ref) || session.source_ref || null;
+    const summary = normalizeString(input.summary);
+    const extra = isPlainObject(input.payload) ? input.payload : {};
+
+    const payload = {
+      type,
+      summary,
+      agent_id: agentId,
+      ...extra
+    };
+
+    return this.appendSessionEvent("session.event_recorded", payload, {
+      session_id: sessionId,
+      agent_id: agentId,
+      harness,
+      source_ref: sourceRef
+    });
+  }
+
+  listSessionEvents(input = {}) {
+    const sessionId = normalizeString(input.session_id);
+    const type = normalizeString(input.type);
+    const limit = Math.min(Math.max(Number(input.limit ?? 50), 1), 200);
+    const offset = Math.max(Number(input.offset ?? 0), 0);
+
+    const clauses = ["session_id = ?"];
+    const params = [sessionId];
+    if (type) {
+      clauses.push("type = ?");
+      params.push(type);
+    }
+    const whereSql = `WHERE ${clauses.join(" AND ")}`;
+    const total = this.db.prepare(`SELECT COUNT(*) AS n FROM session_events ${whereSql}`).get(...params).n;
+    const rows = this.db
+      .prepare(`SELECT * FROM session_events ${whereSql} ORDER BY created_at ASC, id ASC LIMIT ? OFFSET ?`)
+      .all(...params, limit, offset);
+
+    return {
+      events: rows.map(rowToSessionEvent),
+      total,
+      limit,
+      offset
+    };
+  }
 }
 
 function statusPriority(status) {
@@ -939,6 +1036,21 @@ function readJsonl(filePath) {
       throw new Error(`Invalid JSONL event in ${filePath} at line ${index + 1}: ${error.message}`);
     }
   });
+}
+
+function rowToSessionEvent(row) {
+  if (!row) return null;
+  return {
+    id: row.id,
+    session_id: row.session_id,
+    type: row.type,
+    agent_id: row.agent_id,
+    harness: row.harness,
+    source_ref: row.source_ref,
+    summary: row.summary,
+    payload: JSON.parse(row.payload_json || "{}"),
+    created_at: row.created_at
+  };
 }
 
 function rowToSession(row) {

@@ -323,3 +323,108 @@ test("listSessions filters by harness when supplied", async () => {
     assert.equal(result.sessions[0].id, onHermes.session.id);
   });
 });
+
+test("recordSessionEvent appends a typed evidence event and bumps last_activity_at", async () => {
+  await withStore(async (store) => {
+    const { session } = store.startSession({ agent_id: "bede", title: "Recording", harness: "hermes" });
+    const initialActivity = session.last_activity_at;
+
+    await new Promise((resolve) => setTimeout(resolve, 5));
+
+    const event = store.recordSessionEvent({
+      agent_id: "bede",
+      session_id: session.id,
+      harness: "hermes",
+      type: "decision",
+      summary: "Use list-and-select rather than latest-inference.",
+      payload: { confidence: "confirmed" }
+    });
+
+    assert.equal(event.event_type, "session.event_recorded");
+    assert.equal(event.session_id, session.id);
+    assert.equal(event.payload.type, "decision");
+    assert.equal(event.payload.summary, "Use list-and-select rather than latest-inference.");
+    assert.equal(event.payload.confidence, "confirmed");
+
+    const reloaded = store.getSession(session.id);
+    assert.ok(reloaded.last_activity_at > initialActivity, "last_activity_at should advance");
+    assert.ok(reloaded.updated_at > initialActivity, "updated_at should advance");
+    assert.equal(reloaded.status, "active");
+  });
+});
+
+test("recordSessionEvent rejects unknown payload types", async () => {
+  await withStore((store) => {
+    const { session } = store.startSession({ agent_id: "bede", title: "Reject", harness: "hermes" });
+    assert.throws(
+      () => store.recordSessionEvent({
+        agent_id: "bede",
+        session_id: session.id,
+        type: "garbage",
+        summary: "x"
+      }),
+      /payload type/i
+    );
+  });
+});
+
+test("recordSessionEvent throws for unknown session_id", async () => {
+  await withStore((store) => {
+    assert.throws(
+      () => store.recordSessionEvent({
+        agent_id: "bede",
+        session_id: "ses_nope",
+        type: "note",
+        summary: "x"
+      }),
+      /session/i
+    );
+  });
+});
+
+test("listSessionEvents returns events with pagination and type filter", async () => {
+  await withStore((store) => {
+    const { session } = store.startSession({ agent_id: "bede", title: "Listing", harness: "hermes" });
+
+    store.recordSessionEvent({ agent_id: "bede", session_id: session.id, type: "decision", summary: "d1" });
+    store.recordSessionEvent({ agent_id: "bede", session_id: session.id, type: "command", summary: "c1" });
+    store.recordSessionEvent({ agent_id: "bede", session_id: session.id, type: "decision", summary: "d2" });
+    store.recordSessionEvent({ agent_id: "bede", session_id: session.id, type: "note", summary: "n1" });
+
+    const all = store.listSessionEvents({ session_id: session.id });
+    assert.equal(all.total, 5, "start event + 4 record events");
+    assert.equal(all.events.length, 5);
+
+    const decisions = store.listSessionEvents({ session_id: session.id, type: "decision" });
+    assert.equal(decisions.total, 2);
+    assert.ok(decisions.events.every((event) => event.type === "decision"));
+
+    const paginated = store.listSessionEvents({ session_id: session.id, limit: 2, offset: 1 });
+    assert.equal(paginated.events.length, 2);
+    assert.equal(paginated.limit, 2);
+    assert.equal(paginated.offset, 1);
+    assert.equal(paginated.total, 5);
+  });
+});
+
+test("listSessionEvents returns events in chronological order (oldest first)", async () => {
+  await withStore(async (store) => {
+    const { session } = store.startSession({ agent_id: "bede", title: "Order", harness: "hermes" });
+    await new Promise((resolve) => setTimeout(resolve, 2));
+    store.recordSessionEvent({ agent_id: "bede", session_id: session.id, type: "note", summary: "first" });
+    await new Promise((resolve) => setTimeout(resolve, 2));
+    store.recordSessionEvent({ agent_id: "bede", session_id: session.id, type: "note", summary: "second" });
+
+    const result = store.listSessionEvents({ session_id: session.id, type: "note" });
+    assert.equal(result.events[0].summary, "first");
+    assert.equal(result.events[1].summary, "second");
+  });
+});
+
+test("listSessionEvents returns empty for unknown session_id", async () => {
+  await withStore((store) => {
+    const result = store.listSessionEvents({ session_id: "ses_nope" });
+    assert.deepEqual(result.events, []);
+    assert.equal(result.total, 0);
+  });
+});
