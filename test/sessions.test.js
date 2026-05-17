@@ -146,3 +146,180 @@ test("memory writes do not touch the session projection (and vice versa)", async
     assert.equal(sessEvents.length, 1, "session event ledger should only have one entry");
   });
 });
+
+test("listSessions returns multiple selectable sessions and never auto-selects", async () => {
+  await withStore((store) => {
+    const first = store.startSession({ agent_id: "bede", title: "First", harness: "hermes" });
+    const second = store.startSession({ agent_id: "bede", title: "Second", harness: "hermes" });
+
+    const result = store.listSessions({ agent_id: "bede" });
+
+    assert.equal(result.sessions.length, 2);
+    const ids = result.sessions.map((s) => s.id);
+    assert.ok(ids.includes(first.session.id));
+    assert.ok(ids.includes(second.session.id));
+    assert.equal(result.selected, undefined);
+    assert.equal(result.current, undefined);
+  });
+});
+
+test("listSessions ranks sessions matching the caller project_key first", async () => {
+  await withStore((store) => {
+    const other = store.startSession({
+      agent_id: "bede",
+      title: "Other project",
+      harness: "hermes",
+      project_key: "other-repo"
+    });
+    const target = store.startSession({
+      agent_id: "bede",
+      title: "Target project",
+      harness: "hermes",
+      project_key: "the-librarian"
+    });
+
+    const result = store.listSessions({ agent_id: "bede", project_key: "the-librarian" });
+
+    assert.equal(result.sessions[0].id, target.session.id);
+    assert.equal(result.sessions[1].id, other.session.id);
+  });
+});
+
+test("listSessions ranks source-matching sessions ahead of non-matching when project matches both", async () => {
+  await withStore((store) => {
+    const sameProjOtherSrc = store.startSession({
+      agent_id: "bede",
+      title: "Same proj, other cwd",
+      harness: "hermes",
+      project_key: "the-librarian",
+      cwd: "/somewhere/else"
+    });
+    const sameProjSameSrc = store.startSession({
+      agent_id: "bede",
+      title: "Same proj, same cwd",
+      harness: "hermes",
+      project_key: "the-librarian",
+      cwd: "/home/jim/the-librarian"
+    });
+
+    const result = store.listSessions({
+      agent_id: "bede",
+      project_key: "the-librarian",
+      cwd: "/home/jim/the-librarian"
+    });
+
+    assert.equal(result.sessions[0].id, sameProjSameSrc.session.id);
+    assert.equal(result.sessions[1].id, sameProjOtherSrc.session.id);
+  });
+});
+
+test("listSessions matches by source_ref as well as cwd when ranking source", async () => {
+  await withStore((store) => {
+    const otherSrc = store.startSession({
+      agent_id: "bede",
+      title: "Different thread",
+      harness: "hermes",
+      source_ref: "discord:channel:1:thread:2"
+    });
+    const matchingSrc = store.startSession({
+      agent_id: "bede",
+      title: "Matching thread",
+      harness: "hermes",
+      source_ref: "discord:channel:9:thread:42"
+    });
+
+    const result = store.listSessions({
+      agent_id: "bede",
+      source_ref: "discord:channel:9:thread:42"
+    });
+
+    assert.equal(result.sessions[0].id, matchingSrc.session.id);
+    assert.equal(result.sessions[1].id, otherSrc.session.id);
+  });
+});
+
+test("listSessions hides agent_private sessions from other agents", async () => {
+  await withStore((store) => {
+    const shared = store.startSession({
+      agent_id: "bede",
+      title: "Shared",
+      harness: "hermes",
+      visibility: "common"
+    });
+    const bedePrivate = store.startSession({
+      agent_id: "bede",
+      title: "Bede private",
+      harness: "hermes",
+      visibility: "agent_private"
+    });
+    const codexPrivate = store.startSession({
+      agent_id: "codex",
+      title: "Codex private",
+      harness: "codex",
+      visibility: "agent_private"
+    });
+
+    const asBede = store.listSessions({ agent_id: "bede" }).sessions.map((s) => s.id);
+    assert.ok(asBede.includes(shared.session.id));
+    assert.ok(asBede.includes(bedePrivate.session.id));
+    assert.ok(!asBede.includes(codexPrivate.session.id));
+
+    const asCodex = store.listSessions({ agent_id: "codex" }).sessions.map((s) => s.id);
+    assert.ok(asCodex.includes(shared.session.id));
+    assert.ok(!asCodex.includes(bedePrivate.session.id));
+    assert.ok(asCodex.includes(codexPrivate.session.id));
+  });
+});
+
+test("listSessions admin override sees agent_private sessions from any agent", async () => {
+  await withStore((store) => {
+    const codexPrivate = store.startSession({
+      agent_id: "codex",
+      title: "Codex private",
+      harness: "codex",
+      visibility: "agent_private"
+    });
+
+    const asAdmin = store.listSessions({ agent_id: "bede", admin: true }).sessions.map((s) => s.id);
+    assert.ok(asAdmin.includes(codexPrivate.session.id));
+  });
+});
+
+test("listSessions honors limit", async () => {
+  await withStore((store) => {
+    for (let i = 0; i < 5; i += 1) {
+      store.startSession({ agent_id: "bede", title: `Session ${i}`, harness: "hermes" });
+    }
+    const result = store.listSessions({ agent_id: "bede", limit: 3 });
+    assert.equal(result.sessions.length, 3);
+    assert.equal(result.total, 5);
+    assert.equal(result.limit, 3);
+  });
+});
+
+test("listSessions returns the most recently active session first when all ranking keys tie", async () => {
+  await withStore(async (store) => {
+    const first = store.startSession({ agent_id: "bede", title: "First", harness: "hermes" });
+    await new Promise((resolve) => setTimeout(resolve, 5));
+    const second = store.startSession({ agent_id: "bede", title: "Second", harness: "hermes" });
+    await new Promise((resolve) => setTimeout(resolve, 5));
+    const third = store.startSession({ agent_id: "bede", title: "Third", harness: "hermes" });
+
+    const result = store.listSessions({ agent_id: "bede" });
+    assert.deepEqual(
+      result.sessions.map((s) => s.id),
+      [third.session.id, second.session.id, first.session.id]
+    );
+  });
+});
+
+test("listSessions filters by harness when supplied", async () => {
+  await withStore((store) => {
+    const onHermes = store.startSession({ agent_id: "bede", title: "Hermes", harness: "hermes" });
+    store.startSession({ agent_id: "bede", title: "Codex", harness: "codex" });
+
+    const result = store.listSessions({ agent_id: "bede", harness: "hermes" });
+    assert.equal(result.sessions.length, 1);
+    assert.equal(result.sessions[0].id, onHermes.session.id);
+  });
+});

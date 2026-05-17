@@ -835,6 +835,81 @@ export class LibrarianStore {
     const row = this.db.prepare("SELECT * FROM sessions WHERE id = ?").get(id);
     return rowToSession(row);
   }
+
+  listSessions(input = {}) {
+    const agentId = normalizeString(input.agent_id);
+    const isAdmin = input.admin === true;
+    const projectKey = normalizeString(input.project_key) || null;
+    const sourceRef = normalizeString(input.source_ref) || null;
+    const cwd = normalizeString(input.cwd) || null;
+    const harness = normalizeString(input.harness) || null;
+    const limit = Math.min(Math.max(Number(input.limit ?? 10), 1), 100);
+
+    const requested = asArray(input.status);
+    const statusSet = new Set(requested.length ? requested : ["active", "paused", "ended"]);
+    if (input.include_archived) statusSet.add("archived");
+    if (input.include_deleted) statusSet.add("deleted");
+    const statuses = [...statusSet];
+
+    if (!statuses.length) return { sessions: [], total: 0, limit };
+
+    const placeholders = statuses.map(() => "?").join(", ");
+    const rows = this.db.prepare(`SELECT * FROM sessions WHERE status IN (${placeholders})`).all(...statuses);
+    const sessions = rows.map(rowToSession);
+
+    const visible = sessions.filter((session) => {
+      if (isAdmin) return true;
+      if (session.visibility === "common") return true;
+      return agentId && session.created_by_agent_id === agentId;
+    });
+
+    const filtered = visible.filter((session) => {
+      if (harness && session.current_harness !== harness) return false;
+      return true;
+    });
+
+    const scored = filtered.map((session) => ({
+      session,
+      key: [
+        statusPriority(session.status),
+        projectKey && session.project_key === projectKey ? 0 : 1,
+        sourceMatches(session, sourceRef, cwd) ? 0 : 1,
+        (session.next_steps || []).length > 0 ? 0 : 1,
+        -Date.parse(session.last_activity_at || session.started_at || 0)
+      ]
+    }));
+
+    scored.sort((a, b) => compareKeys(a.key, b.key));
+
+    return {
+      sessions: scored.slice(0, limit).map(({ session }) => session),
+      total: scored.length,
+      limit
+    };
+  }
+}
+
+function statusPriority(status) {
+  if (status === "active") return 0;
+  if (status === "paused") return 1;
+  if (status === "ended") return 2;
+  if (status === "archived") return 3;
+  if (status === "deleted") return 4;
+  return 5;
+}
+
+function sourceMatches(session, sourceRef, cwd) {
+  if (sourceRef && session.source_ref === sourceRef) return true;
+  if (cwd && session.cwd === cwd) return true;
+  return false;
+}
+
+function compareKeys(a, b) {
+  for (let i = 0; i < a.length; i += 1) {
+    if (a[i] < b[i]) return -1;
+    if (a[i] > b[i]) return 1;
+  }
+  return 0;
 }
 
 function eventSummary(event) {
