@@ -1,8 +1,12 @@
 #!/usr/bin/env node
+import fs from "node:fs";
 import { LibrarianStore } from "./store.js";
 import {
   formatSessionDetail,
+  formatSessionEvents,
+  formatSessionLifecycle,
   formatSessionList,
+  formatSessionSearch,
   formatSessionStart
 } from "./mcp.js";
 
@@ -46,10 +50,24 @@ function runSessionsCommand(args, store) {
 
   const { positionals, flags } = parseFlags(rest);
 
-  if (verb === "start") return cmdSessionsStart(store, flags);
-  if (verb === "list") return cmdSessionsList(store, flags);
-  if (verb === "show") return cmdSessionsShow(store, positionals[0], flags);
-  if (verb === "help" || verb === "--help") return { stdout: sessionsUsage(), exitCode: 0 };
+  try {
+    if (verb === "start") return cmdSessionsStart(store, flags);
+    if (verb === "list") return cmdSessionsList(store, flags);
+    if (verb === "show") return cmdSessionsShow(store, positionals[0], flags);
+    if (verb === "checkpoint") return cmdSessionsLifecycle(store, "checkpoint", positionals[0], flags);
+    if (verb === "pause") return cmdSessionsLifecycle(store, "pause", positionals[0], flags);
+    if (verb === "end") return cmdSessionsLifecycle(store, "end", positionals[0], flags);
+    if (verb === "attach") return cmdSessionsAttach(store, positionals[0], flags);
+    if (verb === "continue") return cmdSessionsContinue(store, positionals[0], flags);
+    if (verb === "archive") return cmdSessionsArchive(store, positionals[0], flags);
+    if (verb === "restore") return cmdSessionsRestore(store, positionals[0], flags);
+    if (verb === "delete") return cmdSessionsDelete(store, positionals[0], flags);
+    if (verb === "search") return cmdSessionsSearch(store, positionals[0], flags);
+    if (verb === "events") return cmdSessionsEvents(store, positionals[0], flags);
+    if (verb === "help" || verb === "--help") return { stdout: sessionsUsage(), exitCode: 0 };
+  } catch (error) {
+    return { stdout: `Error: ${error.message}`, exitCode: 1 };
+  }
 
   return { stdout: `Unknown sessions verb: ${verb}\n\n${sessionsUsage()}`, exitCode: 1 };
 }
@@ -110,6 +128,170 @@ function cmdSessionsShow(store, sessionId, flags) {
     return { stdout: JSON.stringify(session, null, 2), exitCode: 0 };
   }
   return { stdout: formatSessionDetail(session), exitCode: 0 };
+}
+
+function cmdSessionsLifecycle(store, verb, sessionId, flags) {
+  if (!sessionId) {
+    return { stdout: `Usage: the-librarian sessions ${verb} <session_id>`, exitCode: 1 };
+  }
+  const summary = readSummary(flags);
+  if (summary == null) {
+    return {
+      stdout: `Provide --summary "<text>" or --summary-file <path> for ${verb}.`,
+      exitCode: 1
+    };
+  }
+  const input = {
+    agent_id: callerAgent(flags),
+    admin: flags.admin === true,
+    session_id: sessionId,
+    summary,
+    decisions: collectArray(flags.decision),
+    files_touched: collectArray(flags.file),
+    commands_run: collectArray(flags.command),
+    open_questions: collectArray(flags.question),
+    next_steps: collectArray(flags["next-step"])
+  };
+  const method = verb === "checkpoint"
+    ? store.checkpointSession.bind(store)
+    : verb === "pause"
+      ? store.pauseSession.bind(store)
+      : store.endSession.bind(store);
+  const result = method(input);
+  if (flags.json) return { stdout: JSON.stringify(result, null, 2), exitCode: 0 };
+  const headline = verb === "checkpoint"
+    ? "Checkpoint recorded."
+    : verb === "pause" ? "Session paused." : "Session ended.";
+  return { stdout: formatSessionLifecycle(result.session, headline), exitCode: 0 };
+}
+
+function cmdSessionsAttach(store, sessionId, flags) {
+  if (!sessionId) {
+    return { stdout: "Usage: the-librarian sessions attach <session_id>", exitCode: 1 };
+  }
+  const result = store.attachSession({
+    agent_id: callerAgent(flags),
+    admin: flags.admin === true,
+    session_id: sessionId,
+    harness: flags.harness,
+    source_ref: flags["source-ref"],
+    cwd: flags.cwd
+  });
+  if (flags.json) return { stdout: JSON.stringify(result, null, 2), exitCode: 0 };
+  return {
+    stdout: formatSessionLifecycle(
+      result.session,
+      `Attached to ${result.session.current_harness || "(unspecified harness)"}.`
+    ),
+    exitCode: 0
+  };
+}
+
+function cmdSessionsContinue(store, sessionId, flags) {
+  if (!sessionId) {
+    return { stdout: "Usage: the-librarian sessions continue <session_id>", exitCode: 1 };
+  }
+  const attach = flags.attach !== false;
+  const result = store.continueSession({
+    agent_id: callerAgent(flags),
+    admin: flags.admin === true,
+    session_id: sessionId,
+    target_harness: flags["target-harness"],
+    target_source_ref: flags["target-source-ref"],
+    target_cwd: flags["target-cwd"],
+    attach,
+    format: flags.format
+  });
+  if (flags.json) return { stdout: JSON.stringify(result, null, 2), exitCode: 0 };
+  return { stdout: result.text, exitCode: 0 };
+}
+
+function cmdSessionsArchive(store, sessionId, flags) {
+  if (!sessionId) {
+    return { stdout: "Usage: the-librarian sessions archive <session_id>", exitCode: 1 };
+  }
+  const result = store.archiveSession({
+    agent_id: callerAgent(flags),
+    admin: flags.admin === true,
+    session_id: sessionId,
+    reason: flags.reason
+  });
+  if (flags.json) return { stdout: JSON.stringify(result, null, 2), exitCode: 0 };
+  return { stdout: formatSessionLifecycle(result.session, "Session archived."), exitCode: 0 };
+}
+
+function cmdSessionsRestore(store, sessionId, flags) {
+  if (!sessionId) {
+    return { stdout: "Usage: the-librarian sessions restore <session_id>", exitCode: 1 };
+  }
+  const result = store.restoreSession({
+    agent_id: callerAgent(flags),
+    admin: flags.admin === true,
+    session_id: sessionId
+  });
+  if (flags.json) return { stdout: JSON.stringify(result, null, 2), exitCode: 0 };
+  return {
+    stdout: formatSessionLifecycle(result.session, `Session restored to ${result.session.status}.`),
+    exitCode: 0
+  };
+}
+
+function cmdSessionsDelete(store, sessionId, flags) {
+  if (!sessionId) {
+    return { stdout: "Usage: the-librarian sessions delete <session_id>", exitCode: 1 };
+  }
+  const result = store.deleteSession({
+    agent_id: callerAgent(flags),
+    admin: flags.admin === true,
+    session_id: sessionId,
+    reason: flags.reason
+  });
+  if (flags.json) return { stdout: JSON.stringify(result, null, 2), exitCode: 0 };
+  return { stdout: formatSessionLifecycle(result.session, "Session deleted."), exitCode: 0 };
+}
+
+function cmdSessionsSearch(store, query, flags) {
+  if (!query) {
+    return { stdout: "Usage: the-librarian sessions search <query>", exitCode: 1 };
+  }
+  const result = store.searchSessions({
+    agent_id: callerAgent(flags),
+    admin: flags.admin === true,
+    query,
+    project_key: flags.project,
+    include_archived: flags["include-archived"] === true,
+    include_deleted: flags["include-deleted"] === true,
+    limit: parseNumber(flags.limit)
+  });
+  if (flags.json) return { stdout: JSON.stringify(result, null, 2), exitCode: 0 };
+  return { stdout: formatSessionSearch(result), exitCode: 0 };
+}
+
+function cmdSessionsEvents(store, sessionId, flags) {
+  if (!sessionId) {
+    return { stdout: "Usage: the-librarian sessions events <session_id>", exitCode: 1 };
+  }
+  const session = store.getSession(sessionId);
+  if (!session) {
+    return { stdout: `No session found for id ${sessionId}.`, exitCode: 2 };
+  }
+  const result = store.listSessionEvents({
+    session_id: sessionId,
+    type: flags.type,
+    limit: parseNumber(flags.limit),
+    offset: parseNumber(flags.offset)
+  });
+  if (flags.json) return { stdout: JSON.stringify(result, null, 2), exitCode: 0 };
+  return { stdout: formatSessionEvents(result, session), exitCode: 0 };
+}
+
+function readSummary(flags) {
+  if (typeof flags.summary === "string") return flags.summary;
+  const file = flags["summary-file"];
+  if (typeof file === "string" && file.length) {
+    return fs.readFileSync(file, "utf8").trimEnd();
+  }
+  return null;
 }
 
 function callerAgent(flags) {
@@ -179,14 +361,28 @@ function sessionsUsage() {
     "  start                         Start a new session",
     "  list                          List resumable sessions",
     "  show <session_id>             Show a single session in full",
+    "  checkpoint <session_id>       Update rolling_summary (use --summary or --summary-file)",
+    "  pause <session_id>            Mark paused with a summary",
+    "  end <session_id>              End the session with end_summary",
+    "  attach <session_id>           Record attachment to the caller's harness/source",
+    "  continue <session_id>         Generate a handover package; default attaches",
+    "  archive <session_id>          Hide from default lists",
+    "  restore <session_id>          Restore an archived or deleted session",
+    "  delete <session_id>           Soft-delete (owner-or-admin only)",
+    "  search <query>                Full-text search across session events",
+    "  events <session_id>           List per-session event stream",
     "",
     "Common flags:",
     "  --agent <id>                  Caller agent id (default: $LIBRARIAN_AGENT_ID or 'cli')",
+    "  --admin                       Elevate to admin role (allows cross-agent delete/restore)",
     "  --project <key>               Scope to a project",
     "  --harness <name>              Caller harness identifier",
     "  --cwd <path>                  Caller working directory",
     "  --source-ref <ref>            Caller source reference (e.g. discord:channel:.../thread:...)",
-    "  --json                        Emit JSON instead of prose"
+    "  --json                        Emit JSON instead of prose",
+    "  --format <name>               continue: prose|markdown|claude|codex|opencode|hermes|pi",
+    "  --summary-file <path>         checkpoint/pause/end: read summary from a file",
+    "  --no-attach                   continue: skip attachment (preview only)"
   ].join("\n");
 }
 
