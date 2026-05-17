@@ -15,7 +15,11 @@
     sortField: "updated_at",
     sortOrder: "desc",
     eventState: { events: [], total: 0, limit: 25, offset: 0 },
+    sessions: [],
+    selectedSessionId: null,
   };
+
+  const STALE_SESSION_MS = 7 * 24 * 60 * 60 * 1000;
 
   const charts = {};
   let toastTimer = null;
@@ -38,17 +42,21 @@
     const isBrowse = state.activeTab === "browse";
     const isAnalytics = state.activeTab === "analytics";
     const isLogs = state.activeTab === "logs";
+    const isSessions = state.activeTab === "sessions";
 
     $("sortBar").classList.toggle("hidden", !isBrowse);
     $("eventControls").classList.toggle("hidden", !isLogs);
-    $("browseLayout").classList.toggle("hidden", isAnalytics);
+    $("browseLayout").classList.toggle("hidden", isAnalytics || isSessions);
     $("analyticsTab").classList.toggle("hidden", !isAnalytics);
+    $("sessionsTab").classList.toggle("hidden", !isSessions);
     $("detailPanel").classList.add("hidden");
 
     if (isAnalytics) {
       runAction(loadAnalytics);
     } else if (isLogs) {
       runAction(() => loadEvents(0));
+    } else if (isSessions) {
+      runAction(loadSessions);
     } else {
       runAction(load);
     }
@@ -443,6 +451,311 @@
     const json = await res.json();
     if (!res.ok || json.error) throw new Error(json.error || "Request failed");
     return json;
+  }
+
+  // ── Sessions ───────────────────────────────────────────────────────────────
+
+  $("sessionRefresh")?.addEventListener("click", () => runAction(loadSessions));
+  $("sessionSearch")?.addEventListener("keydown", (event) => {
+    if (event.key === "Enter") runAction(loadSessions);
+  });
+  $("sessionProject")?.addEventListener("change", () => runAction(loadSessions));
+  $("sessionIncludeArchived")?.addEventListener("change", () => runAction(loadSessions));
+  $("sessionIncludeDeleted")?.addEventListener("change", () => runAction(loadSessions));
+
+  async function loadSessions() {
+    const query = $("sessionSearch").value.trim();
+    const project = $("sessionProject").value.trim();
+    const includeArchived = $("sessionIncludeArchived").checked;
+    const includeDeleted = $("sessionIncludeDeleted").checked;
+    let data;
+    if (query) {
+      data = await post("/api/sessions/search", {
+        query,
+        project_key: project || undefined,
+        include_archived: includeArchived,
+        include_deleted: includeDeleted,
+        limit: 50,
+      });
+    } else {
+      const params = new URLSearchParams({ limit: "50" });
+      if (project) params.set("project_key", project);
+      if (includeArchived) params.set("include_archived", "true");
+      if (includeDeleted) params.set("include_deleted", "true");
+      const res = await fetch("/api/sessions?" + params.toString());
+      if (!res.ok) throw new Error("Could not load sessions.");
+      data = await res.json();
+    }
+    state.sessions = data.sessions || [];
+    renderSessionList();
+    if (state.selectedSessionId) {
+      const stillVisible = state.sessions.some((s) => s.id === state.selectedSessionId);
+      if (stillVisible) await openSessionDetail(state.selectedSessionId);
+      else closeSessionDetail();
+    }
+  }
+
+  function renderSessionList() {
+    const list = $("sessionList");
+    if (!state.sessions.length) {
+      list.innerHTML = '<p class="status">No sessions match these filters.</p>';
+      return;
+    }
+    list.innerHTML = state.sessions.map(renderSessionRow).join("");
+    list.querySelectorAll(".session-row").forEach((row) => {
+      row.addEventListener("click", () => runAction(() => openSessionDetail(row.dataset.id)));
+    });
+  }
+
+  function renderSessionRow(session) {
+    const stale = isSessionStale(session);
+    const statusLabel = stale ? `${session.status} · stale` : session.status;
+    const nextStep = (session.next_steps || [])[0] || "";
+    return `<article class="session-row" data-id="${attr(session.id)}">
+      <div class="session-row-head">
+        <h3>${escapeHtml(session.title)}</h3>
+        <div class="meta">
+          ${pill(statusLabel)}
+          ${pill(session.visibility)}
+          ${session.project_key ? pill(session.project_key) : ""}
+          ${pill(session.current_harness || "(unattached)")}
+          ${pill(session.current_agent_id || "(no agent)")}
+        </div>
+      </div>
+      <div class="session-row-body">
+        ${session.source_ref ? `<div><strong>Source:</strong> ${escapeHtml(session.source_ref)}</div>` : ""}
+        <div><strong>Last activity:</strong> ${escapeHtml(session.last_activity_at || "(unknown)")}</div>
+        ${nextStep ? `<div><strong>Next:</strong> ${escapeHtml(nextStep)}</div>` : ""}
+      </div>
+    </article>`;
+  }
+
+  function isSessionStale(session) {
+    if (session.status !== "active") return false;
+    const ts = Date.parse(session.last_activity_at || session.started_at || 0);
+    if (!Number.isFinite(ts)) return false;
+    return Date.now() - ts > STALE_SESSION_MS;
+  }
+
+  async function openSessionDetail(sessionId) {
+    const res = await fetch(`/api/sessions/${encodeURIComponent(sessionId)}`);
+    if (!res.ok) throw new Error("Could not load session.");
+    const session = await res.json();
+    const eventsRes = await fetch(`/api/sessions/${encodeURIComponent(sessionId)}/events?limit=100`);
+    const eventsBody = eventsRes.ok ? await eventsRes.json() : { events: [] };
+    state.selectedSessionId = sessionId;
+    $("sessionDetail").classList.remove("hidden");
+    $("sessionDetail").innerHTML = renderSessionDetail(session, eventsBody.events || []);
+    bindSessionDetailActions(session);
+  }
+
+  function closeSessionDetail() {
+    state.selectedSessionId = null;
+    const panel = $("sessionDetail");
+    if (panel) {
+      panel.classList.add("hidden");
+      panel.innerHTML = "";
+    }
+  }
+
+  function renderSessionDetail(session, events) {
+    const lifecycleActive = ["active", "paused"].includes(session.status);
+    const canRestore = ["archived", "deleted"].includes(session.status);
+    const canArchive = ["active", "paused", "ended"].includes(session.status);
+    const canDelete = session.status !== "deleted";
+    return `
+      <button id="sessionDetailClose" class="icon-btn" aria-label="Close detail">×</button>
+      <h2>${escapeHtml(session.title)}</h2>
+      <div class="meta">
+        ${pill(session.status)}${pill(session.visibility)}
+        ${session.project_key ? pill(session.project_key) : ""}
+        ${pill(session.current_harness || "(unattached)")}
+      </div>
+      <p class="muted">id: ${escapeHtml(session.id)}</p>
+      <p class="muted">created by ${escapeHtml(session.created_by_agent_id || "?")} in ${escapeHtml(session.created_in_harness || "?")} · last activity ${escapeHtml(session.last_activity_at || "?")}</p>
+
+      ${session.start_summary ? `<section><h3>Goal</h3><p>${escapeHtml(session.start_summary)}</p></section>` : ""}
+      ${session.rolling_summary ? `<section><h3>Rolling summary</h3><p>${escapeHtml(session.rolling_summary)}</p></section>` : ""}
+      ${session.end_summary ? `<section><h3>End summary</h3><p>${escapeHtml(session.end_summary)}</p></section>` : ""}
+      ${(session.next_steps || []).length ? `<section><h3>Next steps</h3><ul>${session.next_steps.map((s) => `<li>${escapeHtml(s)}</li>`).join("")}</ul></section>` : ""}
+
+      <section>
+        <h3>Lifecycle</h3>
+        <div class="session-actions">
+          ${lifecycleActive ? '<button class="sessionCheckpoint">Checkpoint…</button>' : ""}
+          ${lifecycleActive ? '<button class="sessionPause">Pause…</button>' : ""}
+          ${lifecycleActive ? '<button class="sessionEnd">End…</button>' : ""}
+          ${canArchive ? '<button class="sessionArchive">Archive</button>' : ""}
+          ${canRestore ? '<button class="primary sessionRestore">Restore</button>' : ""}
+          ${canDelete ? '<button class="danger sessionDelete">Delete</button>' : ""}
+        </div>
+      </section>
+
+      <section>
+        <h3>Continue / handover</h3>
+        <div class="editor-grid">
+          <label>Target harness <input class="sessionTargetHarness"></label>
+          <label>Target source_ref <input class="sessionTargetSource"></label>
+          <label>Target cwd <input class="sessionTargetCwd"></label>
+          <label>Format
+            <select class="sessionContinueFormat">
+              <option value="prose">prose</option>
+              <option value="markdown">markdown</option>
+              <option value="claude">claude</option>
+              <option value="codex">codex</option>
+              <option value="opencode">opencode</option>
+              <option value="hermes">hermes</option>
+              <option value="pi">pi</option>
+            </select>
+          </label>
+          <label class="inline"><input type="checkbox" class="sessionContinueAttach"> Attach now</label>
+        </div>
+        <button class="primary sessionContinue">Generate handover</button>
+        <pre class="session-handover hidden"></pre>
+      </section>
+
+      <section>
+        <h3>Promote a fact to memory</h3>
+        <div class="editor-grid">
+          <label>Title <input class="sessionPromoteTitle"></label>
+          <label>Body <textarea class="sessionPromoteBody"></textarea></label>
+          <label>Category
+            <select class="sessionPromoteCategory">
+              <option>lessons</option>
+              <option>identity</option>
+              <option>relationship</option>
+              <option>preferences</option>
+              <option>projects</option>
+              <option>environment</option>
+              <option>tools</option>
+              <option>people</option>
+              <option>open_threads</option>
+            </select>
+          </label>
+          <label>Visibility
+            <select class="sessionPromoteVisibility">
+              <option>common</option>
+              <option>agent_private</option>
+            </select>
+          </label>
+          <label>Scope
+            <select class="sessionPromoteScope">
+              <option>global</option>
+              <option>project</option>
+              <option>environment</option>
+              <option>tool</option>
+              <option>session</option>
+            </select>
+          </label>
+        </div>
+        <button class="primary sessionPromote">Promote</button>
+        <p class="hint">Protected categories (identity, relationship) are routed to the proposal flow.</p>
+      </section>
+
+      <section>
+        <h3>Events (${events.length})</h3>
+        <div class="session-events">${events.map(renderSessionEvent).join("") || '<p class="muted">No events recorded yet.</p>'}</div>
+      </section>
+    `;
+  }
+
+  function renderSessionEvent(event) {
+    return `<article class="session-event">
+      <div class="meta">${pill(event.type)} ${event.agent_id ? pill(event.agent_id) : ""} <span class="muted">${escapeHtml(event.created_at || "")}</span></div>
+      ${event.summary ? `<p>${escapeHtml(event.summary)}</p>` : ""}
+    </article>`;
+  }
+
+  function bindSessionDetailActions(session) {
+    const panel = $("sessionDetail");
+    panel.querySelector("#sessionDetailClose")?.addEventListener("click", closeSessionDetail);
+
+    panel.querySelector(".sessionCheckpoint")?.addEventListener("click", () => runAction(async () => {
+      const summary = prompt("Checkpoint summary:");
+      if (!summary) return;
+      await post(`/api/sessions/${session.id}/checkpoint`, { summary });
+      showToast("Checkpoint recorded.", "success");
+      await openSessionDetail(session.id);
+    }));
+
+    panel.querySelector(".sessionPause")?.addEventListener("click", () => runAction(async () => {
+      const summary = prompt("Pause summary:");
+      if (!summary) return;
+      await post(`/api/sessions/${session.id}/pause`, { summary });
+      showToast("Session paused.", "success");
+      await loadSessions();
+    }));
+
+    panel.querySelector(".sessionEnd")?.addEventListener("click", () => runAction(async () => {
+      const summary = prompt("End summary:");
+      if (!summary) return;
+      await post(`/api/sessions/${session.id}/end`, { summary });
+      showToast("Session ended.", "success");
+      await loadSessions();
+    }));
+
+    panel.querySelector(".sessionArchive")?.addEventListener("click", () => runAction(async () => {
+      const reason = prompt("Reason (optional):") || "";
+      await post(`/api/sessions/${session.id}/archive`, { reason });
+      showToast("Session archived.", "success");
+      await loadSessions();
+    }));
+
+    panel.querySelector(".sessionRestore")?.addEventListener("click", () => runAction(async () => {
+      await post(`/api/sessions/${session.id}/restore`, {});
+      showToast("Session restored.", "success");
+      await loadSessions();
+    }));
+
+    panel.querySelector(".sessionDelete")?.addEventListener("click", () => runAction(async () => {
+      if (!confirm("Soft-delete this session? You can restore it later.")) return;
+      const reason = prompt("Reason (optional):") || "";
+      await post(`/api/sessions/${session.id}/delete`, { reason });
+      showToast("Session deleted.", "success");
+      await loadSessions();
+    }));
+
+    panel.querySelector(".sessionContinue")?.addEventListener("click", () => runAction(async () => {
+      const body = {
+        target_harness: panel.querySelector(".sessionTargetHarness").value.trim() || undefined,
+        target_source_ref: panel.querySelector(".sessionTargetSource").value.trim() || undefined,
+        target_cwd: panel.querySelector(".sessionTargetCwd").value.trim() || undefined,
+        attach: panel.querySelector(".sessionContinueAttach").checked,
+        format: panel.querySelector(".sessionContinueFormat").value,
+      };
+      const result = await post(`/api/sessions/${session.id}/continue`, body);
+      const handover = panel.querySelector(".session-handover");
+      handover.textContent = result.text || JSON.stringify(result.handover, null, 2);
+      handover.classList.remove("hidden");
+      showToast(body.attach ? "Attached and handover generated." : "Handover generated.", "success");
+      if (body.attach) await loadSessions();
+    }));
+
+    panel.querySelector(".sessionPromote")?.addEventListener("click", () => runAction(() => promoteSessionFact(session)));
+  }
+
+  async function promoteSessionFact(session) {
+    const panel = $("sessionDetail");
+    const memory = {
+      title: panel.querySelector(".sessionPromoteTitle").value.trim(),
+      body: panel.querySelector(".sessionPromoteBody").value.trim(),
+      category: panel.querySelector(".sessionPromoteCategory").value,
+      visibility: panel.querySelector(".sessionPromoteVisibility").value,
+      scope: panel.querySelector(".sessionPromoteScope").value,
+      project_key: session.project_key || undefined,
+    };
+    if (!memory.title && !memory.body) {
+      showToast("Provide a title or body before promoting.", "error");
+      return;
+    }
+    const result = await post(`/api/sessions/${session.id}/promote`, { memory });
+    if (result.status === "proposed") {
+      showToast("Promoted to proposal (awaiting review).", "success");
+    } else if (result.status === "active") {
+      showToast("Promoted to active memory.", "success");
+    } else {
+      showToast(`Promotion result: ${result.status}`, "info");
+    }
   }
 
   // ── Helpers ────────────────────────────────────────────────────────────────

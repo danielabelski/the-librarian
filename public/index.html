@@ -45,6 +45,7 @@
     <div class="content-area">
       <nav class="tabs">
         <button class="tab active" data-tab="browse">Browse</button>
+        <button class="tab" data-tab="sessions">Sessions</button>
         <button class="tab" data-tab="analytics">Analytics</button>
         <button class="tab" data-tab="proposals">Proposals</button>
         <button class="tab" data-tab="conflicts">Conflicts</button>
@@ -141,6 +142,20 @@
           <div class="chart-card"><canvas id="chartByProject"></canvas></div>
           <div class="chart-card"><canvas id="chartByStatus"></canvas></div>
           <div class="chart-card"><canvas id="chartByScope"></canvas></div>
+        </div>
+      </div>
+
+      <div id="sessionsTab" class="tab-content hidden">
+        <div class="session-controls">
+          <input id="sessionSearch" placeholder="Search session events">
+          <input id="sessionProject" placeholder="Project key (optional)">
+          <label class="inline"><input type="checkbox" id="sessionIncludeArchived"> Include archived</label>
+          <label class="inline"><input type="checkbox" id="sessionIncludeDeleted"> Include deleted</label>
+          <button id="sessionRefresh">Refresh</button>
+        </div>
+        <div class="session-layout">
+          <div class="session-list" id="sessionList"></div>
+          <div id="sessionDetail" class="session-detail hidden"></div>
         </div>
       </div>
     </div>

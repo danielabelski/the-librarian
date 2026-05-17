@@ -255,6 +255,28 @@ test("POST /api/sessions/:id/promote creates an active memory for non-protected 
   }
 });
 
+test("Dashboard HTML and JS expose the sessions UI surface", async () => {
+  const dataDir = makeTempDir();
+  const server = await startHttpServer({ dataDir });
+  try {
+    const html = await (await fetch(`${server.url}/`)).text();
+    assert.match(html, /data-tab="sessions"/);
+    assert.match(html, /id="sessionsTab"/);
+    assert.match(html, /id="sessionList"/);
+    assert.match(html, /id="sessionDetail"/);
+    assert.match(html, /id="sessionSearch"/);
+
+    const js = await (await fetch(`${server.url}/app.js`)).text();
+    assert.match(js, /loadSessions/);
+    assert.match(js, /renderSessionList/);
+    assert.match(js, /openSessionDetail/);
+    assert.match(js, /promoteSessionFact/);
+  } finally {
+    await server.stop();
+    cleanupTempDir(dataDir);
+  }
+});
+
 test("POST /api/sessions/:id/promote routes protected categories through the proposal flow", async () => {
   const dataDir = makeTempDir();
   const session = await seedSession(dataDir, { title: "Protected promote" });
