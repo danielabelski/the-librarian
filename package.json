@@ -13,7 +13,9 @@
     "rebuild": "node --no-warnings src/cli.js rebuild",
     "seed": "node --no-warnings src/cli.js seed",
     "test": "node --no-warnings --test test/*.test.js",
-    "smoke": "node --no-warnings scripts/smoke-test.js"
+    "test:sessions": "node --no-warnings --test test/sessions.test.js test/sessions.mcp.test.js test/sessions.http.test.js test/integrations.test.js",
+    "smoke": "node --no-warnings scripts/smoke-test.js",
+    "healthcheck": "node --no-warnings scripts/healthcheck.js"
   },
   "engines": {
     "node": ">=22.5.0"
