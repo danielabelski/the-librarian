@@ -7,7 +7,7 @@ const store = new LibrarianStore();
 try {
   if (command === "rebuild") {
     store.rebuildIndex();
-    console.log(`Rebuilt index from ${store.eventsPath}`);
+    console.log(`Rebuilt projection from ${store.eventsPath} and ${store.sessionsPath}`);
   } else if (command === "seed") {
     seed(store);
     console.log(`Seeded sample proposal and operating memory in ${store.dataDir}`);

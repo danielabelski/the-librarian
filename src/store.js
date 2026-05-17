@@ -145,7 +145,7 @@ export class LibrarianStore {
       payload
     };
     fs.appendFileSync(this.eventsPath, `${JSON.stringify(event)}\n`, "utf8");
-    this.rebuildIndex();
+    this._rebuildMemoryIndex();
     return event;
   }
 
@@ -237,6 +237,11 @@ export class LibrarianStore {
   }
 
   rebuildIndex() {
+    this._rebuildMemoryIndex();
+    this._rebuildSessionIndex();
+  }
+
+  _rebuildMemoryIndex() {
     const { memories, events } = this.reduce();
     const tx = this.db.prepare("BEGIN");
     const commit = this.db.prepare("COMMIT");
@@ -296,6 +301,24 @@ export class LibrarianStore {
 
       commit.run();
       this.writeSnapshot(memories);
+    } catch (error) {
+      rollback.run();
+      throw error;
+    }
+  }
+
+  _rebuildSessionIndex() {
+    const events = this.readSessionEvents();
+    const tx = this.db.prepare("BEGIN");
+    const commit = this.db.prepare("COMMIT");
+    const rollback = this.db.prepare("ROLLBACK");
+    tx.run();
+    try {
+      this.db.exec(
+        "DELETE FROM sessions; DELETE FROM session_events; DELETE FROM session_events_fts;"
+      );
+      for (const event of events) this._applySessionEvent(event);
+      commit.run();
     } catch (error) {
       rollback.run();
       throw error;
