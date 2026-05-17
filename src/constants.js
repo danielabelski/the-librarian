@@ -18,6 +18,32 @@ export const STATUSES = ["active", "proposed", "conflicted", "archived", "delete
 export const PRIORITIES = ["low", "normal", "high", "core"];
 export const CONFIDENCES = ["tentative", "working", "strong"];
 
+export const SESSION_STATUSES = ["active", "paused", "ended", "archived", "deleted"];
+export const SESSION_CAPTURE_MODES = ["off", "summary", "log"];
+export const SESSION_EVENT_TYPES = [
+  "session.started",
+  "session.attached_to_harness",
+  "session.event_recorded",
+  "session.checkpointed",
+  "session.paused",
+  "session.ended",
+  "session.archived",
+  "session.restored",
+  "session.deleted",
+  "session.promoted_to_memory"
+];
+export const SESSION_PAYLOAD_TYPES = [
+  "message",
+  "command",
+  "file",
+  "error",
+  "decision",
+  "question",
+  "checkpoint",
+  "handover",
+  "note"
+];
+
 export const DEFAULT_AGENT_ID = "unknown-agent";
 
 export function nowIso() {

@@ -3,9 +3,12 @@ import path from "node:path";
 import { DatabaseSync } from "node:sqlite";
 import {
   DEFAULT_AGENT_ID,
+  SESSION_CAPTURE_MODES,
+  VISIBILITIES,
   asArray,
   isProtectedCategory,
   makeId,
+  normalizeEnum,
   normalizeMemoryInput,
   normalizeString,
   nowIso
@@ -17,6 +20,7 @@ export class LibrarianStore {
   constructor(options = {}) {
     this.dataDir = options.dataDir || process.env.LIBRARIAN_DATA_DIR || DEFAULT_DATA_DIR;
     this.eventsPath = path.join(this.dataDir, "events.jsonl");
+    this.sessionsPath = path.join(this.dataDir, "sessions.jsonl");
     this.dbPath = path.join(this.dataDir, "librarian.sqlite");
     this.snapshotPath = path.join(this.dataDir, "memories.md");
     this.ensureFiles();
@@ -28,6 +32,7 @@ export class LibrarianStore {
   ensureFiles() {
     fs.mkdirSync(this.dataDir, { recursive: true });
     if (!fs.existsSync(this.eventsPath)) fs.writeFileSync(this.eventsPath, "", "utf8");
+    if (!fs.existsSync(this.sessionsPath)) fs.writeFileSync(this.sessionsPath, "", "utf8");
   }
 
   close() {
@@ -73,19 +78,60 @@ export class LibrarianStore {
         created_at TEXT NOT NULL,
         payload_json TEXT NOT NULL
       );
+      CREATE TABLE IF NOT EXISTS sessions (
+        id TEXT PRIMARY KEY,
+        title TEXT NOT NULL,
+        project_key TEXT,
+        status TEXT NOT NULL,
+        prior_status TEXT,
+        visibility TEXT NOT NULL,
+        created_by_agent_id TEXT,
+        current_agent_id TEXT,
+        created_in_harness TEXT,
+        current_harness TEXT,
+        source_ref TEXT,
+        cwd TEXT,
+        start_summary TEXT,
+        rolling_summary TEXT,
+        end_summary TEXT,
+        next_steps_json TEXT NOT NULL,
+        tags_json TEXT NOT NULL,
+        capture_mode TEXT NOT NULL,
+        started_at TEXT NOT NULL,
+        updated_at TEXT NOT NULL,
+        last_activity_at TEXT NOT NULL,
+        paused_at TEXT,
+        ended_at TEXT,
+        archived_at TEXT,
+        deleted_at TEXT,
+        metadata_json TEXT NOT NULL
+      );
+      CREATE TABLE IF NOT EXISTS session_events (
+        id TEXT PRIMARY KEY,
+        session_id TEXT NOT NULL,
+        type TEXT NOT NULL,
+        agent_id TEXT,
+        harness TEXT,
+        source_ref TEXT,
+        summary TEXT NOT NULL,
+        payload_json TEXT NOT NULL,
+        created_at TEXT NOT NULL
+      );
+      CREATE VIRTUAL TABLE IF NOT EXISTS session_events_fts USING fts5(
+        event_id UNINDEXED,
+        session_id,
+        summary,
+        payload_text
+      );
     `);
   }
 
   readEvents() {
-    const raw = fs.readFileSync(this.eventsPath, "utf8").trim();
-    if (!raw) return [];
-    return raw.split("\n").filter(Boolean).map((line, index) => {
-      try {
-        return JSON.parse(line);
-      } catch (error) {
-        throw new Error(`Invalid JSONL event at line ${index + 1}: ${error.message}`);
-      }
-    });
+    return readJsonl(this.eventsPath);
+  }
+
+  readSessionEvents() {
+    return readJsonl(this.sessionsPath);
   }
 
   appendEvent(eventType, payload = {}, options = {}) {
@@ -638,6 +684,218 @@ export class LibrarianStore {
       text: formatContextPackage({ identity, relationship, privateMemories, relevant })
     };
   }
+
+  appendSessionEvent(eventType, payload = {}, options = {}) {
+    const event = {
+      event_id: makeId("sevt"),
+      event_type: eventType,
+      session_id: options.session_id || payload.session?.id || payload.session_id || null,
+      agent_id: options.agent_id || payload.agent_id || DEFAULT_AGENT_ID,
+      harness: options.harness ?? payload.harness ?? null,
+      source_ref: options.source_ref ?? payload.source_ref ?? null,
+      created_at: nowIso(),
+      payload
+    };
+    fs.appendFileSync(this.sessionsPath, `${JSON.stringify(event)}\n`, "utf8");
+    this._applySessionEvent(event);
+    return event;
+  }
+
+  _applySessionEvent(event) {
+    const type = event.event_type;
+    if (type === "session.started") {
+      const session = event.payload?.session;
+      if (!session) return;
+      this._insertSessionRow(session);
+      this._insertSessionEventRow(event, eventSummary(event), shortType(type));
+    }
+  }
+
+  _insertSessionRow(session) {
+    this.db.prepare(`
+      INSERT OR REPLACE INTO sessions (
+        id, title, project_key, status, prior_status, visibility,
+        created_by_agent_id, current_agent_id, created_in_harness, current_harness,
+        source_ref, cwd, start_summary, rolling_summary, end_summary,
+        next_steps_json, tags_json, capture_mode,
+        started_at, updated_at, last_activity_at,
+        paused_at, ended_at, archived_at, deleted_at, metadata_json
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    `).run(
+      session.id,
+      session.title,
+      session.project_key || null,
+      session.status,
+      session.prior_status || null,
+      session.visibility,
+      session.created_by_agent_id || null,
+      session.current_agent_id || null,
+      session.created_in_harness || null,
+      session.current_harness || null,
+      session.source_ref || null,
+      session.cwd || null,
+      session.start_summary || null,
+      session.rolling_summary || null,
+      session.end_summary || null,
+      JSON.stringify(asArray(session.next_steps)),
+      JSON.stringify(asArray(session.tags)),
+      session.capture_mode,
+      session.started_at,
+      session.updated_at,
+      session.last_activity_at,
+      session.paused_at || null,
+      session.ended_at || null,
+      session.archived_at || null,
+      session.deleted_at || null,
+      JSON.stringify(session.metadata || {})
+    );
+  }
+
+  _insertSessionEventRow(event, summary, type) {
+    this.db.prepare(`
+      INSERT OR REPLACE INTO session_events (
+        id, session_id, type, agent_id, harness, source_ref, summary, payload_json, created_at
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+    `).run(
+      event.event_id,
+      event.session_id,
+      type,
+      event.agent_id || null,
+      event.harness || null,
+      event.source_ref || null,
+      summary,
+      JSON.stringify(event.payload || {}),
+      event.created_at
+    );
+    this.db.prepare(`
+      INSERT INTO session_events_fts (event_id, session_id, summary, payload_text)
+      VALUES (?, ?, ?, ?)
+    `).run(
+      event.event_id,
+      event.session_id,
+      summary,
+      JSON.stringify(event.payload || {})
+    );
+  }
+
+  startSession(input = {}) {
+    const now = nowIso();
+    const harness = normalizeString(input.harness) || null;
+    const projectKey = normalizeString(input.project_key) || null;
+    const agentId = normalizeString(input.agent_id, DEFAULT_AGENT_ID);
+    const visibility = normalizeEnum(input.visibility, VISIBILITIES, "common");
+    const captureMode = normalizeEnum(input.capture_mode, SESSION_CAPTURE_MODES, "summary");
+    const title = normalizeString(input.title) || `${projectKey || harness || "agent"} session @ ${now}`;
+
+    const session = {
+      id: makeId("ses"),
+      title,
+      project_key: projectKey,
+      status: "active",
+      prior_status: null,
+      visibility,
+      created_by_agent_id: agentId,
+      current_agent_id: agentId,
+      created_in_harness: harness,
+      current_harness: harness,
+      source_ref: normalizeString(input.source_ref) || null,
+      cwd: normalizeString(input.cwd) || null,
+      start_summary: normalizeString(input.start_summary) || null,
+      rolling_summary: null,
+      end_summary: null,
+      next_steps: asArray(input.next_steps),
+      tags: asArray(input.tags),
+      capture_mode: captureMode,
+      started_at: now,
+      updated_at: now,
+      last_activity_at: now,
+      paused_at: null,
+      ended_at: null,
+      archived_at: null,
+      deleted_at: null,
+      metadata: isPlainObject(input.metadata) ? input.metadata : {}
+    };
+
+    this.appendSessionEvent(
+      "session.started",
+      { session, agent_id: agentId },
+      {
+        session_id: session.id,
+        agent_id: agentId,
+        harness: session.current_harness,
+        source_ref: session.source_ref
+      }
+    );
+
+    return { session: this.getSession(session.id) };
+  }
+
+  getSession(id) {
+    if (!id) return null;
+    const row = this.db.prepare("SELECT * FROM sessions WHERE id = ?").get(id);
+    return rowToSession(row);
+  }
+}
+
+function eventSummary(event) {
+  const type = event.event_type;
+  if (type === "session.started") {
+    return event.payload?.session?.start_summary || event.payload?.session?.title || "Session started.";
+  }
+  return type;
+}
+
+function shortType(eventType) {
+  return eventType.startsWith("session.") ? eventType.slice("session.".length) : eventType;
+}
+
+function isPlainObject(value) {
+  return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
+function readJsonl(filePath) {
+  if (!fs.existsSync(filePath)) return [];
+  const raw = fs.readFileSync(filePath, "utf8").trim();
+  if (!raw) return [];
+  return raw.split("\n").filter(Boolean).map((line, index) => {
+    try {
+      return JSON.parse(line);
+    } catch (error) {
+      throw new Error(`Invalid JSONL event in ${filePath} at line ${index + 1}: ${error.message}`);
+    }
+  });
+}
+
+function rowToSession(row) {
+  if (!row) return null;
+  return {
+    id: row.id,
+    title: row.title,
+    project_key: row.project_key,
+    status: row.status,
+    prior_status: row.prior_status,
+    visibility: row.visibility,
+    created_by_agent_id: row.created_by_agent_id,
+    current_agent_id: row.current_agent_id,
+    created_in_harness: row.created_in_harness,
+    current_harness: row.current_harness,
+    source_ref: row.source_ref,
+    cwd: row.cwd,
+    start_summary: row.start_summary,
+    rolling_summary: row.rolling_summary,
+    end_summary: row.end_summary,
+    next_steps: JSON.parse(row.next_steps_json || "[]"),
+    tags: JSON.parse(row.tags_json || "[]"),
+    capture_mode: row.capture_mode,
+    started_at: row.started_at,
+    updated_at: row.updated_at,
+    last_activity_at: row.last_activity_at,
+    paused_at: row.paused_at,
+    ended_at: row.ended_at,
+    archived_at: row.archived_at,
+    deleted_at: row.deleted_at,
+    metadata: JSON.parse(row.metadata_json || "{}")
+  };
 }
 
 function rowToMemory(row) {
