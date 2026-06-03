@@ -1,0 +1,274 @@
+// JSON sidecar curation store (plan 036 Phase 4 / the SQLite-removal track, c.1b).
+// The run + operation bookkeeping that `memory_curation_runs` /
+// `memory_curation_operations` hold in SQLite, on a sidecar JSON file OUTSIDE the
+// git vault — so the markdown backend stops opening sqlite for the curator. Same
+// `CurationStore` contract as the SQLite store; the markdown branch wires it in
+// place of `createCurationStore({db})` at c.1c. Run-history reads go through the
+// same `CurationRunReader` seam the scheduler consumes.
+//
+// Whole-file read/write per op (fine at the curator's once-a-day-per-slice
+// cadence — tens of runs, not thousands). The run lifecycle guards mirror the
+// SQLite store exactly: start COALESCEs started_at; complete/fail only transition
+// a NON-terminal run (so a reclaimed→failed run can't be resurrected, §10.1).
+
+import fs from "node:fs";
+import path from "node:path";
+import { makeId, nowIso } from "../../constants.js";
+import {
+  type CuratorMemorySource,
+  type EvidenceSlice,
+  type MemoryEvidenceBundle,
+  type MemoryEvidenceCaps,
+  gatherMemoryEvidence as gatherMemoryEvidenceImpl,
+} from "../../curator-evidence.js";
+import type { ScheduleConfig } from "../../curator-schedule.js";
+import {
+  type CurationRunReader,
+  type DueSlice,
+  selectDueSlices as selectDueSlicesImpl,
+} from "../../curator-scheduler.js";
+import type {
+  CompleteCurationRunInput,
+  CreateCurationRunInput,
+  CurationOperation,
+  CurationRun,
+  CurationStore,
+  FailCurationRunInput,
+  ListCurationRunsInput,
+  RecordCurationOperationInput,
+} from "../curation-store.js";
+
+interface CurationData {
+  runs: Record<string, CurationRun>;
+  operations: Record<string, CurationOperation>;
+}
+
+export interface JsonCurationStoreDeps {
+  /** Sidecar file path, outside the git vault (e.g. `<data-dir>/curation-runs.json`). */
+  filePath: string;
+  /** Memory-evidence reads (slices + active/proposed/archived per slice), vault-backed. */
+  memorySource: CuratorMemorySource;
+  now?: () => string;
+  generateId?: () => string;
+}
+
+const TERMINAL = new Set(["completed", "failed"]);
+
+// JS equivalent of the SQLite `runFilter` clause — a run belongs to a slice.
+function matchesSlice(run: CurationRun, slice: EvidenceSlice): boolean {
+  switch (slice.kind) {
+    case "common_global":
+      return run.visibility === "common" && run.project_key === null;
+    case "common_project":
+      return run.visibility === "common" && run.project_key === (slice.projectKey ?? "");
+    case "agent_private":
+      return run.visibility === "agent_private" && run.agent_id === (slice.agentId ?? "");
+  }
+}
+
+// Newest-first by created_at, id as a deterministic tiebreak (the SQLite store's
+// `ORDER BY created_at DESC, id DESC`).
+function byCreatedDesc(a: CurationRun, b: CurationRun): number {
+  return b.created_at.localeCompare(a.created_at) || b.id.localeCompare(a.id);
+}
+
+export function createJsonCurationStore(deps: JsonCurationStoreDeps): CurationStore {
+  const { filePath, memorySource } = deps;
+  const now = deps.now ?? nowIso;
+  const newRunId = deps.generateId ?? (() => makeId("run"));
+
+  function readAll(): CurationData {
+    if (!fs.existsSync(filePath)) return { runs: {}, operations: {} };
+    try {
+      const parsed = JSON.parse(fs.readFileSync(filePath, "utf8")) as Partial<CurationData>;
+      return {
+        runs: parsed.runs && typeof parsed.runs === "object" ? parsed.runs : {},
+        operations:
+          parsed.operations && typeof parsed.operations === "object" ? parsed.operations : {},
+      };
+    } catch {
+      // Corrupt file → start fresh. Curation runs are advisory scheduling
+      // bookkeeping (the apply path has its own idempotency), not durable
+      // knowledge, so degrading-to-empty mirrors the other sidecars.
+      return { runs: {}, operations: {} };
+    }
+  }
+
+  function writeAll(data: CurationData): void {
+    fs.mkdirSync(path.dirname(filePath), { recursive: true });
+    fs.writeFileSync(filePath, `${JSON.stringify(data, null, 2)}\n`, "utf8");
+  }
+
+  function createCurationRun(input: CreateCurationRunInput): CurationRun {
+    const id = newRunId();
+    const run: CurationRun = {
+      id,
+      status: input.status ?? "pending",
+      trigger: input.trigger,
+      mode: input.mode ?? "apply",
+      project_key: input.project_key ?? null,
+      visibility: input.visibility,
+      agent_id: input.agent_id ?? null,
+      input_hash: input.input_hash,
+      input_memory_ids: input.input_memory_ids ?? [],
+      model_provider: input.model_provider ?? null,
+      model_name: input.model_name ?? null,
+      usage_input_tokens: 0,
+      usage_output_tokens: 0,
+      summary: null,
+      error: null,
+      created_at: now(),
+      started_at: null,
+      completed_at: null,
+    };
+    const data = readAll();
+    data.runs[id] = run;
+    writeAll(data);
+    return run;
+  }
+
+  function getCurationRun(id: string): CurationRun | null {
+    return readAll().runs[id] ?? null;
+  }
+
+  function findCompletedApplyRun(inputHash: string): CurationRun | null {
+    // Only completed APPLY runs satisfy idempotency; dry-runs + in-flight runs
+    // must not suppress a real run (§10.2).
+    const matches = Object.values(readAll().runs)
+      .filter((r) => r.input_hash === inputHash && r.mode === "apply" && r.status === "completed")
+      .sort(byCreatedDesc);
+    return matches[0] ?? null;
+  }
+
+  function listCurationRuns(input: ListCurationRunsInput = {}): CurationRun[] {
+    const limit = Math.min(Math.max(input.limit ?? 50, 1), 200);
+    return Object.values(readAll().runs)
+      .filter((r) => (input.status ? r.status === input.status : true))
+      .filter((r) => (input.trigger ? r.trigger === input.trigger : true))
+      .sort(byCreatedDesc)
+      .slice(0, limit);
+  }
+
+  function recordCurationOperation(input: RecordCurationOperationInput): CurationOperation {
+    const id = makeId("op");
+    const operation: CurationOperation = {
+      id,
+      run_id: input.run_id,
+      operation_type: input.operation_type,
+      status: input.status,
+      confidence: input.confidence,
+      risk_level: input.risk_level,
+      source_memory_ids: input.source_memory_ids ?? [],
+      target_memory_ids: input.target_memory_ids ?? [],
+      title: input.title ?? null,
+      rationale: input.rationale,
+      proposed_payload: input.proposed_payload ?? {},
+      applied_at: null,
+      error: null,
+    };
+    const data = readAll();
+    data.operations[id] = operation;
+    writeAll(data);
+    return operation;
+  }
+
+  function getCurationOperations(runId: string): CurationOperation[] {
+    return Object.values(readAll().operations)
+      .filter((op) => op.run_id === runId)
+      .sort((a, b) => a.id.localeCompare(b.id));
+  }
+
+  function requireRun(id: string): CurationRun {
+    const run = getCurationRun(id);
+    if (!run) throw new Error(`No curation run found for id ${id}`);
+    return run;
+  }
+
+  function startCurationRun(id: string): CurationRun {
+    const data = readAll();
+    const run = data.runs[id];
+    if (!run) throw new Error(`No curation run found for id ${id}`);
+    run.status = "running";
+    run.started_at = run.started_at ?? now(); // COALESCE — keep the original on restart
+    writeAll(data);
+    return run;
+  }
+
+  function completeCurationRun(id: string, input: CompleteCurationRunInput = {}): CurationRun {
+    const data = readAll();
+    const run = data.runs[id];
+    if (!run) throw new Error(`No curation run found for id ${id}`);
+    // Only a non-terminal run transitions — a reclaimed→failed run can't be
+    // resurrected by a late completion (§10.1).
+    if (!TERMINAL.has(run.status)) {
+      run.status = "completed";
+      run.completed_at = now();
+      run.summary = input.summary ?? null;
+      run.usage_input_tokens = input.usage_input_tokens ?? 0;
+      run.usage_output_tokens = input.usage_output_tokens ?? 0;
+      writeAll(data);
+    }
+    return requireRun(id);
+  }
+
+  function failCurationRun(id: string, input: FailCurationRunInput): CurationRun {
+    const data = readAll();
+    const run = data.runs[id];
+    if (!run) throw new Error(`No curation run found for id ${id}`);
+    if (!TERMINAL.has(run.status)) {
+      run.status = "failed";
+      run.completed_at = now();
+      run.error = input.error;
+      writeAll(data);
+    }
+    return requireRun(id);
+  }
+
+  // Run-history reads — the scheduler's CurationRunReader seam over the JSON runs.
+  const runReader: CurationRunReader = {
+    lastCompletedRunAt(slice: EvidenceSlice): Date | null {
+      const completed = Object.values(readAll().runs).filter(
+        (r) => matchesSlice(r, slice) && r.status === "completed" && r.completed_at,
+      );
+      if (completed.length === 0) return null;
+      const latest = completed.reduce((a, b) =>
+        (a.completed_at as string) >= (b.completed_at as string) ? a : b,
+      );
+      return new Date(latest.completed_at as string);
+    },
+    findRunningRun(slice: EvidenceSlice): { id: string; startedAt: Date } | null {
+      const running = Object.values(readAll().runs).filter(
+        (r) => matchesSlice(r, slice) && r.status === "running" && r.started_at,
+      );
+      if (running.length === 0) return null;
+      const latest = running.reduce((a, b) =>
+        (a.started_at as string) >= (b.started_at as string) ? a : b,
+      );
+      return { id: latest.id, startedAt: new Date(latest.started_at as string) };
+    },
+  };
+
+  function gatherMemoryEvidence(
+    slice: EvidenceSlice,
+    caps: MemoryEvidenceCaps,
+  ): MemoryEvidenceBundle {
+    return gatherMemoryEvidenceImpl(memorySource, slice, caps);
+  }
+
+  return {
+    createCurationRun,
+    getCurationRun,
+    findCompletedApplyRun,
+    listCurationRuns,
+    recordCurationOperation,
+    getCurationOperations,
+    startCurationRun,
+    completeCurationRun,
+    failCurationRun,
+    gatherMemoryEvidence,
+    listCuratorSlices: () => memorySource.listSlices(),
+    selectDueSlices: (config: ScheduleConfig, runNow: Date): DueSlice[] =>
+      selectDueSlicesImpl(memorySource, runReader, config, runNow),
+    findRunningRun: (slice: EvidenceSlice) => runReader.findRunningRun(slice),
+  };
+}

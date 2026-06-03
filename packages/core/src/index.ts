@@ -279,6 +279,7 @@ export {
   type JsonConversationStateStoreDeps,
   type JsonSettingsStoreDeps,
   createJsonConversationStateStore,
+  createJsonCurationStore,
   createJsonSettingsStore,
 } from "./store/sidecar/index.js";
 export {

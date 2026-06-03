@@ -8,3 +8,4 @@ export {
   createJsonConversationStateStore,
 } from "./conversation-state-store.js";
 export { type JsonSettingsStoreDeps, createJsonSettingsStore } from "./settings-store.js";
+export { type JsonCurationStoreDeps, createJsonCurationStore } from "./curation-store.js";
