@@ -93,16 +93,6 @@ structured operator feedback + an optional dashboard chat.
 
 These are deployment-specific exercises against the canonical instance, not code.
 
-- **Exercise the remaining `/lib-session-*` verbs end-to-end** (resume, checkpoint,
-  pause, end with-and-without summary, search) to confirm Claude Code dispatches each
-  natively. `start` was verified.
-- **Run the healthcheck against the deployed canonical instance** —
-  `pnpm run healthcheck -- --remote https://<canonical>:3838 --agent-token <token>`.
-  Passes locally; needs a run against the production Librarian.
-- **Configure `LIBRARIAN_AGENT_TOKENS` on the canonical server** so Claude Code
-  session calls attribute to a real `agent_id` (today they record as
-  `unknown-agent`). With dashboard-managed tokens (A5) you can mint these from the
-  **Tokens** UI instead of env.
 - **Validate the Hermes plugin's privacy gate end-to-end.** Round-trip
   (recall/remember/verify) was confirmed on the VPS, but the
   `pre_gateway_dispatch` privacy gate wasn't exercised against a natural-language
@@ -144,26 +134,8 @@ landing than the autonomous run had room for.
 
 ## Spec open questions (deferred)
 
-- **Collapse `is_global` into `domain` by renaming `general` → `global`.**
-  Drop the boolean entirely; let `domain="global"` carry "visible everywhere"
-  and leave every other domain isolated. Easier to reason about (1D pick
-  instead of a 2×2 truth table) and removes the existing trap where
-  `domain="general" & is_global=false` is invisible from work-area domains
-  despite "general" reading as "everywhere" to a human. Costs: lossy
-  migration for the `domain=X & is_global=true` combo (proposal: copy the
-  prior domain into an `origin-domain:<x>` tag), classifier output schema
-  change (`is_global` boolean → `domain` string), and prompt/eval-fixture
-  refresh. Pick up when operators repeatedly hit the
-  `domain=general & is_global=false` trap, when classifier-eval shows low
-  agreement on `is_global` verdicts, or when a new feature would compound
-  the two-axis complexity rather than collapse it.
-  _(raised 2026-05-29; parked pending real-usage evidence)_
 - **`harness_private` visibility.** Add later if sandbox/test traffic patterns
   demand it.
-- **Physical purge of soft-deleted sessions** — retention policy + admin UI (the
-  `purge_session` admin tool exists; this is the policy/UI layer on top).
-- **`session.split` / `session.merged` event types.** Revisit once usage patterns
-  emerge.
 
 ## Harness integration ideas
 
